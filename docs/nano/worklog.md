@@ -95,7 +95,7 @@ ingestion, `fed84e8` endpoints, + this docs commit):
 
 **Open questions / next steps:** (in addition to the 2026-07-13 list)
 
-- [ ] Bump + push both forks; the requirements.txt tarball SHA is now `eedb374…` (dwdparse).
+- [x] Bump + push both forks (done 2026-07-14; tarball pin `eedb374…` verified resolvable).
 - [ ] CI workflows (test + image build) per deployment.md.
 
 ## 2026-07-14 — nano app: Gesundheit card for all four products
