@@ -56,3 +56,17 @@ bottom. Every session that changes something appends an entry.
       upstream-shaped for exactly that).
 - [ ] `pyproject.toml` `requires-python = ">= 3.8"` is stale upstream (code uses
       `datetime.UTC`, 3.11+) — not our fight; noted in case a rebase trips on it.
+
+## 2026-07-14 — Pollen debug view in the nano app
+
+**Done** (WeatherGermany repo, branch `debug/pollen-local`, commit `5baf23c`):
+
+- `PollenResponse` models + `PollenClient` in WeatherCore (bypasses `BrightSkyGateway` on
+  purpose — single dev host, default `http://127.0.0.1:5599`), decoding tests from a captured
+  real response.
+- "Pollen (lokal)" section in `DebugMenuView` (#if DEBUG): editable base URL, loads via the
+  currently shown coordinate, shows region, issue time, DWD attribution, per-day species rows.
+- Verified by hand in the iOS 26.5 Simulator against the locally running fork. Loopback HTTP
+  needs no ATS exception.
+- These models/client are the seed of the real pollen feature; when `api.nano-wetter.de`
+  serves `/pollen`, route the client through `BrightSkyGateway`.
