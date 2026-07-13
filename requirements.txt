@@ -29,7 +29,11 @@ coloredlogs==15.0.1
     # via brightsky (pyproject.toml)
 cssselect==1.4.0
     # via parsel
-dwdparse==0.9.22
+# nano fork: pinned to our dwdparse fork (PollenParser) instead of PyPI.
+# Bump this SHA after committing+pushing in ../dwdparse (see
+# docs/nano/fork-management.md). For local dev use `pip install -e ../dwdparse`
+# after installing requirements.
+dwdparse @ git+https://github.com/fuekiin/dwdparse.git@514ed464b8466de8e9fa19cda22ab7aa2ea412e0
     # via brightsky (pyproject.toml)
 falcon==4.2.0
     # via brightsky (pyproject.toml)
