@@ -96,5 +96,18 @@ ingestion, `fed84e8` endpoints, + this docs commit):
 **Open questions / next steps:** (in addition to the 2026-07-13 list)
 
 - [ ] Bump + push both forks; the requirements.txt tarball SHA is now `eedb374…` (dwdparse).
-- [ ] nano app: debug sections / real features for the three new endpoints.
 - [ ] CI workflows (test + image build) per deployment.md.
+
+## 2026-07-14 — nano app: Gesundheit card for all four products
+
+**Done** (WeatherGermany `debug/pollen-local`, commit `f31c304`):
+
+- WeatherCore: `PollenClient` → `HealthClient` (all four endpoints), response models,
+  decoding tests from captured responses (234/234 tests pass).
+- DEBUG-only "Gesundheit" GlassCard on the Weather home (worst pollen today, UV max, current
+  Wärmebelastung slot, worst Biowetter effect, severity-colored) + detail sheet with all four
+  products and the CC BY attribution. Re-fetches when the displayed coordinate changes.
+- Verified in the Simulator against the local fork (Stuttgart: pollen 110/112, zone I,
+  city Stuttgart — all consistent).
+- Follow-ups for the real feature: route through `BrightSkyGateway` once prod serves the
+  endpoints, drop the `#if DEBUG` gate, App-Group caching, proper design pass.
