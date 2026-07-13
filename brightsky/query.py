@@ -1,5 +1,6 @@
 import datetime
 import json
+import math
 import os
 import tempfile
 from functools import cached_property
@@ -550,16 +551,14 @@ async def pollen(
     }
 
 
-class PollenRegionManager:
-    """Resolves lat/lon to DWD pollen regions (Pollenflugbereiche).
+class RegionManager:
+    """Point-in-polygon resolution over a DWD GeoServer region layer."""
 
-    Region polygons come from the DWD GeoServer's 'Pollenfluggebiete'
-    layer, where the 'GF' property matches s31fg.json's partregion_id
-    (or region_id for regions without part-regions).
-    """
+    REGIONS_CACHE_PATH = None
+    REGIONS_URL_SETTING = None
 
-    REGIONS_CACHE_PATH = os.path.join(
-        tempfile.gettempdir(), 'pollen_regions.json')
+    def make_meta(self, properties):
+        raise NotImplementedError
 
     @cached_property
     def tree(self):
@@ -576,17 +575,14 @@ class PollenRegionManager:
                 for c in coordinates
             ]
             p = MultiPolygon(polygons)
-            self.region_meta[p] = {
-                'region_id': f['properties']['GF'],
-                'name': f['properties']['GEN'],
-            }
+            self.region_meta[p] = self.make_meta(f['properties'])
         return STRtree(list(self.region_meta.keys()))
 
     def get_region_data(self):
         path = self.REGIONS_CACHE_PATH
         if not os.path.isfile(path):
             resp = requests.get(
-                settings.POLLEN_REGIONS_URL,
+                getattr(settings, self.REGIONS_URL_SETTING),
                 headers={'User-Agent': USER_AGENT},
             )
             with open(path, 'wb') as f:
@@ -602,7 +598,266 @@ class PollenRegionManager:
         return self.region_meta[region]
 
 
+class PollenRegionManager(RegionManager):
+    """Resolves lat/lon to DWD pollen regions (Pollenflugbereiche).
+
+    Region polygons come from the DWD GeoServer's 'Pollenfluggebiete'
+    layer, where the 'GF' property matches s31fg.json's partregion_id
+    (or region_id for regions without part-regions).
+    """
+
+    REGIONS_CACHE_PATH = os.path.join(
+        tempfile.gettempdir(), 'pollen_regions.json')
+    REGIONS_URL_SETTING = 'POLLEN_REGIONS_URL'
+
+    def make_meta(self, properties):
+        return {
+            'region_id': properties['GF'],
+            'name': properties['GEN'],
+        }
+
+
+class BiowetterZoneManager(RegionManager):
+    """Resolves lat/lon to DWD Biowetter zones (A-K).
+
+    Zone polygons come from the DWD GeoServer's 'Biowettergebiete'
+    layer. Its 'GF' property numbers the zones in the DWD's canonical
+    order, which is NOT alphabetical — F and G are swapped. This mapping
+    was verified against the zone names in biowetter.json (2026-07-14).
+    """
+
+    REGIONS_CACHE_PATH = os.path.join(
+        tempfile.gettempdir(), 'biowetter_zones.json')
+    REGIONS_URL_SETTING = 'BIOWETTER_ZONES_URL'
+    ZONE_LETTERS = {
+        1: 'A',
+        2: 'B',
+        3: 'C',
+        4: 'D',
+        5: 'E',
+        6: 'G',
+        7: 'F',
+        8: 'H',
+        9: 'I',
+        10: 'J',
+        11: 'K',
+    }
+
+    def make_meta(self, properties):
+        return {
+            'zone_id': self.ZONE_LETTERS[properties['GF']],
+            'name': properties['GEN'],
+        }
+
+
+class CityLocationManager:
+    """Coordinates for the cities of the DWD's city-based health products
+    (uvi.json, gt.json).
+
+    The products identify locations by name only. Coordinates come from
+    the DWD GeoServer's 'Uv_Stationen' layer (matched via ALIASNAME,
+    covers all uvi.json cities); a handful of gt.json-only cities are
+    missing from that layer and use static coordinates instead. Nearest-
+    city responses always include the matched city and its distance, so
+    the resolution is transparent to clients.
+    """
+
+    STATIONS_CACHE_PATH = os.path.join(
+        tempfile.gettempdir(), 'uv_stations.json')
+    # Product city names that differ from the layer's ALIASNAME
+    # (verified unique among German stations)
+    ALIASES = {
+        'Frankfurt': 'Frankfurt/Main',
+        'List': 'List auf Sylt',
+    }
+    # gt.json cities missing from the Uv_Stationen layer (city centers)
+    STATIC_LOCATIONS = {
+        'Köln': (50.94, 6.96),
+        'Schwerin': (53.63, 11.41),
+        'Saarbrücken': (49.24, 7.0),
+        'Mannheim': (49.49, 8.47),
+        'Erfurt': (50.98, 11.03),
+    }
+    MAX_DIST = 200000
+
+    @cached_property
+    def locations(self):
+        locations = {}
+        for f in self.get_station_data()['features']:
+            lon, lat = f['geometry']['coordinates'][:2]
+            locations[f['properties']['ALIASNAME'].strip()] = (lat, lon)
+        locations.update(self.STATIC_LOCATIONS)
+        return locations
+
+    def get_station_data(self):
+        path = self.STATIONS_CACHE_PATH
+        if not os.path.isfile(path):
+            resp = requests.get(
+                settings.UV_STATIONS_URL,
+                headers={'User-Agent': USER_AGENT},
+            )
+            with open(path, 'wb') as f:
+                f.write(resp.content)
+        with open(path) as f:
+            return json.load(f)
+
+    def get_location(self, city):
+        return self.locations.get(self.ALIASES.get(city, city))
+
+    def find_nearest(self, lat, lon, cities):
+        best = None
+        for city in cities:
+            location = self.get_location(city)
+            if not location:
+                continue
+            distance = self._distance(lat, lon, *location)
+            if best is None or distance < best['distance']:
+                best = {
+                    'city': city,
+                    'lat': location[0],
+                    'lon': location[1],
+                    'distance': round(distance),
+                }
+        if best is None or best['distance'] > self.MAX_DIST:
+            raise NoData("Requested position is not covered by the DWD")
+        return best
+
+    @staticmethod
+    def _distance(lat1, lon1, lat2, lon2):
+        # Haversine, sufficient for nearest-city selection
+        phi1, phi2 = math.radians(lat1), math.radians(lat2)
+        dphi = math.radians(lat2 - lat1)
+        dlambda = math.radians(lon2 - lon1)
+        a = (
+            math.sin(dphi / 2) ** 2 +
+            math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+        )
+        return 2 * 6371000 * math.asin(math.sqrt(a))
+
+
 _pollen_regions = PollenRegionManager()
+_biowetter_zones = BiowetterZoneManager()
+_city_locations = CityLocationManager()
+
+
+async def biowetter(
+    conn,
+    lat=None,
+    lon=None,
+    zone_id=None,
+):
+    if lat is not None and lon is not None:
+        zone_id = _biowetter_zones.find(lat, lon)['zone_id']
+    elif zone_id is None:
+        raise ValueError("Please supply lat & lon, or zone_id")
+    sql = """
+        SELECT *
+        FROM biowetter
+        WHERE zone_id = {zone_id} AND date >= current_date
+        ORDER BY date, period DESC
+    """
+    params = {'zone_id': zone_id.upper()}
+    sql, params = topg(sql, params)
+    rows = make_dicts(await conn.fetch(sql, *params))
+    if not rows:
+        raise NoData("No Biowetter data for the given location criteria")
+    return {
+        'biowetter': [
+            {
+                'date': row['date'],
+                'period': row['period'],
+                'weather_class': row['weather_class'],
+                # asyncpg returns jsonb as text
+                'effects': json.loads(row['effects']),
+                'recommendations': json.loads(row['recommendations']),
+            }
+            for row in rows
+        ],
+        'location': {
+            'zone_id': rows[0]['zone_id'],
+            'zone_name': rows[0]['zone_name'],
+        },
+        'last_update': rows[0]['last_update'],
+        'next_update': rows[0]['next_update'],
+        'sender': rows[0]['sender'],
+    }
+
+
+async def uv_index(
+    conn,
+    lat=None,
+    lon=None,
+    city=None,
+):
+    return await _city_product(
+        conn,
+        table='uv_index',
+        record_fields=['city', 'date', 'uv_index'],
+        time_field='date',
+        lat=lat,
+        lon=lon,
+        city=city,
+    )
+
+
+async def thermal_hazard(
+    conn,
+    lat=None,
+    lon=None,
+    city=None,
+):
+    return await _city_product(
+        conn,
+        table='thermal_hazard',
+        record_fields=['city', 'timestamp', 'level'],
+        time_field='timestamp',
+        lat=lat,
+        lon=lon,
+        city=city,
+    )
+
+
+async def _city_product(
+    conn,
+    table,
+    record_fields,
+    time_field,
+    lat=None,
+    lon=None,
+    city=None,
+):
+    params = {}
+    where = f"{time_field} >= current_date"
+    if city is not None:
+        where += " AND city = {city}"
+        params['city'] = city
+    sql = f"""
+        SELECT *
+        FROM {table}
+        WHERE {where}
+        ORDER BY city, {time_field}
+    """
+    sql, params = topg(sql, params)
+    rows = make_dicts(await conn.fetch(sql, *params))
+    location = None
+    if city is None and lat is not None and lon is not None:
+        cities = sorted({row['city'] for row in rows})
+        location = _city_locations.find_nearest(lat, lon, cities)
+        rows = [row for row in rows if row['city'] == location['city']]
+    if not rows:
+        raise NoData(f"No data in {table} for the given location criteria")
+    result = {
+        table: [
+            {k: row[k] for k in record_fields}
+            for row in rows
+        ],
+        'last_update': rows[0]['last_update'],
+        'next_update': rows[0]['next_update'],
+        'sender': rows[0]['sender'],
+    }
+    if location:
+        result['location'] = location
+    return result
 
 
 async def sources(

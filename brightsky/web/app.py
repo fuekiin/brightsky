@@ -16,16 +16,21 @@ from brightsky.settings import settings
 
 from .models import (
     AlertsResponse,
+    BiowetterResponse,
     CurrentWeatherResponse,
     NotFoundResponse,
     PollenResponse,
     RadarResponse,
     SourcesResponse,
     SynopResponse,
+    ThermalHazardResponse,
+    UVIndexResponse,
     WeatherResponse,
 )
 from .params import (
     AlertsParams,
+    BiowetterParams,
+    CityProductParams,
     CurrentWeatherParams,
     PollenParams,
     RadarParams,
@@ -573,6 +578,132 @@ async def pollen(
         lat=q.lat,
         lon=q.lon,
         region_id=q.region_id,
+    )
+    enhance(result, timezone=q.timezone)
+    return ORJSONResponse(result)
+
+
+@app.get(
+    '/biowetter',
+    operation_id='getBiowetter',
+    summary='Biowetter',
+    responses=common_responses,
+)
+async def biowetter(
+    q: Annotated[BiowetterParams, Query()],
+) -> BiowetterResponse:
+    """
+    Returns the DWD's biometeorological hazard forecast for weather-
+    sensitive people (_Gefahrenindizes für Wetterfühlige_) for the zone
+    matching the given location: per half-day, a hazard assessment for
+    several medical categories (_Formkreise_, e.g. cardiovascular,
+    rheumatic, asthma), with recommendations.
+
+    You must supply both `lat` and `lon` _or_ a `zone_id` (`A`-`K`).
+
+    ### Notes
+
+    * The DWD publishes this forecast once per day (late morning) for 11
+      zones covering Germany, for today's afternoon and both halves of
+      tomorrow and the day after.
+    * The `effects` and `recommendations` content is passed through from
+      the DWD unchanged (German).
+    * Data source: Deutscher Wetterdienst, licensed CC BY 4.0. The
+      `sender` field contains the attribution.
+
+    ### Additional resources
+
+    * [Raw data on the Open Data Server](https://opendata.dwd.de/climate_environment/health/alerts/)
+    * [DWD file format description (German)](https://opendata.dwd.de/climate_environment/health/alerts/Beschreibung_biowetter.pdf)
+    * [DWD background on the hazard indices (German)](https://www.dwd.de/DE/leistungen/gefahrenindizesbiowetter/gefahrenindizesbiowetter.html)
+    """
+    result = await query.biowetter(
+        ctx['pool'],
+        lat=q.lat,
+        lon=q.lon,
+        zone_id=q.zone_id,
+    )
+    enhance(result, timezone=q.timezone)
+    return ORJSONResponse(result)
+
+
+@app.get(
+    '/uv_index',
+    operation_id='getUVIndex',
+    summary='UV index',
+    responses=common_responses,
+)
+async def uv_index(
+    q: Annotated[CityProductParams, Query()],
+) -> UVIndexResponse:
+    """
+    Returns the DWD's UV hazard index (_UV-Gefahrenindex_): the maximum
+    expected UV index for today, tomorrow, and the day after tomorrow.
+
+    The DWD publishes this forecast for 38 selected cities and mountain
+    stations. Supply `lat` and `lon` to get the nearest of these
+    (matched city and distance are returned in `location`), or `city`
+    for an exact name, or neither to get all cities.
+
+    ### Notes
+
+    * Published once per day in the morning.
+    * Data source: Deutscher Wetterdienst, licensed CC BY 4.0. The
+      `sender` field contains the attribution.
+
+    ### Additional resources
+
+    * [Raw data on the Open Data Server](https://opendata.dwd.de/climate_environment/health/alerts/)
+    * [DWD file format description (German)](https://opendata.dwd.de/climate_environment/health/alerts/Beschreibung_uvi.pdf)
+    * [More information on the UV index](https://www.uv-index.de/)
+    """
+    result = await query.uv_index(
+        ctx['pool'],
+        lat=q.lat,
+        lon=q.lon,
+        city=q.city,
+    )
+    enhance(result, timezone=q.timezone)
+    return ORJSONResponse(result)
+
+
+@app.get(
+    '/thermal_hazard',
+    operation_id='getThermalHazard',
+    summary='Thermal hazard',
+    responses=common_responses,
+)
+async def thermal_hazard(
+    q: Annotated[CityProductParams, Query()],
+) -> ThermalHazardResponse:
+    """
+    Returns the DWD's thermal hazard index (_Thermischer Gefahrenindex_,
+    based on the perceived temperature / _Gefühlte Temperatur_): a health
+    hazard category at 03/09/15/21 CET for today, tomorrow, and the day
+    after tomorrow, plus 03 CET three days out.
+
+    The DWD publishes this forecast for 34 selected cities. Supply `lat`
+    and `lon` to get the nearest of these (matched city and distance are
+    returned in `location`), or `city` for an exact name, or neither to
+    get all cities.
+
+    ### Notes
+
+    * Published once per day in the morning.
+    * Data source: Deutscher Wetterdienst, licensed CC BY 4.0. The
+      `sender` field contains the attribution.
+
+    ### Additional resources
+
+    * [Raw data on the Open Data Server](https://opendata.dwd.de/climate_environment/health/alerts/)
+    * [DWD file format description (German)](https://opendata.dwd.de/climate_environment/health/alerts/Beschreibung_gt.pdf)
+    * [DWD background on thermal hazard indices (German)](https://www.dwd.de/DE/leistungen/gefahrenindizesthermisch/gefahrenindizesthermisch.html)
+    """
+    result = await query.thermal_hazard(
+        ctx['pool'],
+        lat=q.lat,
+        lon=q.lon,
+        city=q.city,
     )
     enhance(result, timezone=q.timezone)
     return ORJSONResponse(result)

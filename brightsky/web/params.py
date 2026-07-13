@@ -394,3 +394,46 @@ class PollenParams(
         elif self.region_id is not None:
             return self
         raise ValueError("Please supply lat & lon, or region_id")
+
+
+class BiowetterZone(BaseModel):
+    zone_id: str = Field(
+        default=None,
+        pattern='^[A-Ka-k]$',
+        description="DWD Biowetter zone ID, a letter from `A` to `K`.",
+        examples=[
+            "E",
+        ],
+    )
+
+
+class BiowetterParams(
+    Timezone,
+    BiowetterZone,
+    LatLon,
+):
+    @model_validator(mode='after')
+    def validate_at_least_one_option(self):
+        if self.lat is not None and self.lon is not None:
+            return self
+        elif self.zone_id is not None:
+            return self
+        raise ValueError("Please supply lat & lon, or zone_id")
+
+
+class HealthCity(BaseModel):
+    city: str = Field(
+        default=None,
+        description="City name as used by the DWD product (e.g. `Berlin`, `List auf Sylt`). Omit both `city` and `lat`/`lon` to retrieve all cities.",  # noqa
+        examples=[
+            "Berlin",
+        ],
+    )
+
+
+class CityProductParams(
+    Timezone,
+    HealthCity,
+    LatLon,
+):
+    pass

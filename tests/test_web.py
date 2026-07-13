@@ -9,8 +9,20 @@ from fastapi.testclient import TestClient
 
 import brightsky
 from brightsky.export import DBExporter, SYNOPExporter
-from brightsky.parsers import CAPParser, PollenParser, RadarParser
-from brightsky.query import _pollen_regions, _warn_cells
+from brightsky.parsers import (
+    BiowetterParser,
+    CAPParser,
+    PollenParser,
+    RadarParser,
+    ThermalHazardParser,
+    UVIndexParser,
+)
+from brightsky.query import (
+    _biowetter_zones,
+    _city_locations,
+    _pollen_regions,
+    _warn_cells,
+)
 from brightsky.web import make_app
 
 from .utils import settings
@@ -313,6 +325,29 @@ def pollen_data(db, data_dir):
         r['date'] += shift
     p.exporter().export(iter(records))
     _pollen_regions.REGIONS_CACHE_PATH = data_dir / 'pollen_regions.json'
+
+
+@pytest.fixture
+def health_data(db, data_dir):
+    # Shift all forecast dates so the fixtures' 'today' is today
+    shift = None
+    for parser_cls, filename in [
+        (BiowetterParser, 'biowetter.json'),
+        (UVIndexParser, 'uvi.json'),
+        (ThermalHazardParser, 'gt.json'),
+    ]:
+        p = parser_cls()
+        records = list(p.parse(data_dir / filename))
+        if shift is None:
+            shift = datetime.date.today() - min(r['date'] for r in records)
+        for r in records:
+            if 'date' in r:
+                r['date'] += shift
+            else:
+                r['timestamp'] += shift
+        p.exporter().export(iter(records))
+    _biowetter_zones.REGIONS_CACHE_PATH = data_dir / 'biowetter_zones.json'
+    _city_locations.STATIONS_CACHE_PATH = data_dir / 'uv_stations.json'
 
 
 def test_sources_required_parameters(data, api):
@@ -921,6 +956,91 @@ def test_pollen_response(pollen_data, api):
     # Missing or incomplete location parameters
     assert api.get('/pollen').status_code == 422
     assert api.get('/pollen?lat=52.52').status_code == 422
+
+
+def test_biowetter_response(health_data, api):
+    # Query by lat/lon (Berlin -> zone E)
+    resp = api.get('/biowetter?lat=52.52&lon=13.41')
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['location'] == {
+        'zone_id': 'E',
+        'zone_name': 'Berlin, Brandenburg und im nördlichen Sachsen-Anhalt',
+    }
+    assert data['sender'] == 'Medizin-Meteorologie'
+    # today_afternoon + two half-days each for tomorrow and the day after
+    assert len(data['biowetter']) == 5
+    first = data['biowetter'][0]
+    assert first['date'] == datetime.date.today().isoformat()
+    assert first['period'] == 'afternoon'
+    assert first['weather_class'] == '5-0-w3'
+    assert len(first['effects']) == 7
+    assert first['effects'][0]['value'] == 'hohe Gefährdung'
+    assert first['effects'][0]['subeffect'][0]['name'] == (
+        'psychisch-geistige Leistungsfähigkeit')
+    assert len(first['recommendations']) == 4
+    # Query by zone id, case-insensitive
+    resp = api.get('/biowetter?zone_id=a')
+    assert resp.status_code == 200
+    assert resp.json()['location']['zone_id'] == 'A'
+    # Valid zone without ingested data
+    assert api.get('/biowetter?zone_id=K').status_code == 404
+    # Invalid zone letter
+    assert api.get('/biowetter?zone_id=X').status_code == 422
+    # Outside of covered area
+    assert api.get('/biowetter?lat=32&lon=7.6').status_code == 404
+    # Missing parameters
+    assert api.get('/biowetter').status_code == 422
+
+
+def test_uv_index_response(health_data, api):
+    # Query by lat/lon -> nearest station (Berlin)
+    resp = api.get('/uv_index?lat=52.52&lon=13.41')
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['location']['city'] == 'Berlin'
+    assert data['location']['distance'] < 20000
+    assert data['sender'] == 'Deutscher Wetterdienst - Medizin-Meteorologie'
+    assert [r['city'] for r in data['uv_index']] == ['Berlin'] * 3
+    today_record = next(
+        r for r in data['uv_index']
+        if r['date'] == datetime.date.today().isoformat())
+    assert today_record['uv_index'] == 5
+    # Query by city name
+    resp = api.get('/uv_index?city=Zugspitze')
+    assert resp.status_code == 200
+    assert len(resp.json()['uv_index']) == 3
+    assert 'location' not in resp.json()
+    # No location criteria -> all cities
+    resp = api.get('/uv_index')
+    assert resp.status_code == 200
+    assert len(resp.json()['uv_index']) == 9
+    # Unknown city
+    assert api.get('/uv_index?city=Atlantis').status_code == 404
+    # Too far from any station
+    assert api.get('/uv_index?lat=32&lon=7.6').status_code == 404
+
+
+def test_thermal_hazard_response(health_data, api):
+    # Köln is not in the Uv_Stationen layer and resolves via the static
+    # coordinate table
+    resp = api.get('/thermal_hazard?lat=50.95&lon=6.95')
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['location']['city'] == 'Köln'
+    assert len(data['thermal_hazard']) == 13
+    # Query by city; today's 15:00 CET slot (14:00 UTC) is 'mittel'
+    resp = api.get('/thermal_hazard?city=Berlin')
+    assert resp.status_code == 200
+    records = resp.json()['thermal_hazard']
+    assert len(records) == 13
+    slot = next(
+        r for r in records
+        if r['timestamp'] == f'{datetime.date.today()}T14:00:00+00:00')
+    assert slot['level'] == 'mittel'
+    # No location criteria -> all cities
+    resp = api.get('/thermal_hazard')
+    assert len(resp.json()['thermal_hazard']) == 26
 
 
 def test_status_response(api):

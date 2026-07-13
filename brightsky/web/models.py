@@ -829,3 +829,206 @@ class PollenResponse(ResponseModel):
             'nullable': True,
         },
     )
+
+
+class HealthMetadata(ResponseModel):
+    last_update: datetime.datetime = Field(
+        description="Time this forecast was issued by the DWD",
+    )
+    next_update: datetime.datetime = Field(
+        description="Time the next forecast will be issued by the DWD",
+        json_schema_extra={
+            'nullable': True,
+        },
+    )
+    sender: str = Field(
+        description="Issuer of the data (DWD attribution, CC BY 4.0)",
+        examples=[
+            "Deutscher Wetterdienst - Medizin-Meteorologie",
+        ],
+        json_schema_extra={
+            'nullable': True,
+        },
+    )
+
+
+class BiowetterSubeffect(ResponseModel):
+    name: str = Field(
+        description="Symptom or susceptibility (DWD naming, German)",
+        examples=[
+            "Kopfschmerz- bzw. Migräneanfälligkeit",
+        ],
+    )
+    value: str = Field(
+        description="Hazard level for this symptom",
+        examples=[
+            "geringe Gefährdung",
+        ],
+    )
+
+
+class BiowetterEffect(ResponseModel):
+    name: str = Field(
+        description="Medical Formkreis (DWD naming, German)",
+        examples=[
+            "Wettereinfluss auf das allgemeine Befinden",
+        ],
+    )
+    value: str = Field(
+        description="Hazard level for this Formkreis",
+        examples=[
+            "geringe Gefährdung",
+        ],
+    )
+    subeffect: list[BiowetterSubeffect] = Field(
+        default=None,
+        description="Breakdown into individual symptoms, where provided",
+        json_schema_extra={
+            'nullable': True,
+        },
+    )
+
+
+class BiowetterRecommendation(ResponseModel):
+    name: str = Field(
+        description="Medical Formkreis the recommendation applies to",
+        examples=[
+            "Wettereinfluss auf Asthma",
+        ],
+    )
+    value: str = Field(
+        description="Recommendation text (German)",
+        examples=[
+            "Bewegung im Freien zur Stärkung der Abwehrkräfte",
+        ],
+    )
+
+
+class BiowetterRecord(ResponseModel):
+    date: datetime.date = Field(
+        description="Forecast day",
+        examples=[
+            "2026-07-14",
+        ],
+    )
+    period: Literal['morning', 'afternoon'] = Field(
+        description="Half of the forecast day (1./2. Tageshälfte)",
+    )
+    weather_class: str = Field(
+        description="DWD Wetterklasse code",
+        examples=[
+            "5-0-w2",
+        ],
+        json_schema_extra={
+            'nullable': True,
+        },
+    )
+    effects: list[BiowetterEffect]
+    recommendations: list[BiowetterRecommendation]
+
+
+class BiowetterLocation(ResponseModel):
+    zone_id: str = Field(
+        description="DWD Biowetter zone ID (A-K)",
+        examples=[
+            "E",
+        ],
+    )
+    zone_name: str = Field(
+        description="Zone name",
+        examples=[
+            "Berlin, Brandenburg und im nördlichen Sachsen-Anhalt",
+        ],
+    )
+
+
+class BiowetterResponse(HealthMetadata):
+    biowetter: list[BiowetterRecord]
+    location: BiowetterLocation
+
+
+class CityLocation(ResponseModel):
+    city: str = Field(
+        description="Matched city (nearest to the given lat/lon)",
+        examples=[
+            "Berlin",
+        ],
+    )
+    lat: float = Field(
+        description="City latitude in decimal degrees",
+        examples=[
+            52.47,
+        ],
+    )
+    lon: float = Field(
+        description="City longitude in decimal degrees",
+        examples=[
+            13.4,
+        ],
+    )
+    distance: int = Field(
+        description="Distance of the city from the given lat/lon, in meters",  # noqa
+        examples=[
+            16365,
+        ],
+    )
+
+
+class UVIndexRecord(ResponseModel):
+    city: str = Field(
+        description="City the forecast applies to",
+        examples=[
+            "Berlin",
+        ],
+    )
+    date: datetime.date = Field(
+        description="Forecast day",
+        examples=[
+            "2026-07-14",
+        ],
+    )
+    uv_index: int = Field(
+        description="Maximum expected UV index for this day",
+        examples=[
+            5,
+        ],
+    )
+
+
+class UVIndexResponse(HealthMetadata):
+    uv_index: list[UVIndexRecord]
+    location: CityLocation = Field(
+        json_schema_extra={
+            'nullable': True,
+        },
+    )
+
+
+class ThermalHazardRecord(ResponseModel):
+    city: str = Field(
+        description="City the forecast applies to",
+        examples=[
+            "Berlin",
+        ],
+    )
+    timestamp: datetime.datetime = Field(
+        description="Forecast time (the DWD publishes slots at 03/09/15/21 CET)",  # noqa
+        examples=[
+            "2026-07-14T14:00:00+00:00",
+        ],
+    )
+    level: str = Field(
+        description="Thermal hazard level (keine/gering/mittel/hoch/stark)",
+        examples=[
+            "mittel",
+        ],
+    )
+
+
+class ThermalHazardResponse(HealthMetadata):
+    thermal_hazard: list[ThermalHazardRecord]
+    location: CityLocation = Field(
+        json_schema_extra={
+            'nullable': True,
+        },
+    )

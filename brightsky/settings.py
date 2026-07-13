@@ -22,6 +22,11 @@ KEEP_DOWNLOADS = False
 MIN_DATE = datetime.datetime(2010, 1, 1, tzinfo=tzutc())
 MAX_DATE = None
 POLLING_CRONTAB_MINUTE = '*'
+BIOWETTER_ZONES_URL = (
+    'https://maps.dwd.de/geoserver/wfs'
+    '?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature'
+    '&TYPENAMES=Biowettergebiete&OUTPUTFORMAT=json'
+)
 POLLEN_REGIONS_URL = (
     'https://maps.dwd.de/geoserver/wfs'
     '?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature'
@@ -29,6 +34,11 @@ POLLEN_REGIONS_URL = (
 )
 REDIS_URL = 'redis://localhost'
 SERVER_URL = 'http://localhost:5000'
+UV_STATIONS_URL = (
+    'https://maps.dwd.de/geoserver/wfs'
+    '?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature'
+    '&TYPENAMES=Uv_Stationen&OUTPUTFORMAT=json'
+)
 WARN_CELLS_URL = (
     'https://maps.dwd.de/geoserver/wfs'
     '?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature'
