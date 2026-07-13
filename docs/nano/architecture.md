@@ -112,11 +112,43 @@ attribution metadata pulled from the rows.
   layer. The web fixture shifts record dates so the file's "today" is the test run's today
   (the query filters on `current_date`).
 
-## Region-vs-point distinction (for the remaining products)
+## The other three products (added 2026-07-14)
 
-Pollen, Biowetter and Gefühlte Temperatur are **region-based**; UVI is **point-based** (selected
-cities and mountains) and will need nearest-point resolution instead of polygons — build it last
-and separately. Before building Biowetter/GT, verify what region scheme their `content` uses and
-whether a matching DWD polygon source exists (do **not** assume the Pollenflugbereiche). If no
-authoritative polygon source can be found, that is a blocker to surface, not to work around —
-wrong boundaries silently give users wrong forecasts.
+All follow the same pipeline; this section records only where they differ from pollen. Full
+verified facts in `plans/2026-07-14-remaining-health-products.md`.
+
+### Biowetter (`biowetter.json` → `biowetter` table → `/biowetter`)
+
+- 11 zones with letter ids A–K; one record per zone × half-day (5 per zone: today's afternoon
+  + both halves of the next two days, each entry carrying its own `date`).
+- Envelope quirks: attribution is in `author` (normalized to `sender` by the parser),
+  timestamps are `%Y-%m-%d %H:%M` without "Uhr".
+- The DWD `effect[]`/`recomms[]` trees (medical categories with optional `subeffect` lists,
+  German) are passed through unchanged and stored as `jsonb`.
+- Resolution: `BiowetterZoneManager` over the GeoServer `Biowettergebiete` layer. **Careful:**
+  the layer's `GF` numbering is the DWD's canonical zone order, which is NOT alphabetical —
+  `6=G`, `7=F` (all 11 verified by name matching on 2026-07-14; mapping hard-coded in the
+  manager).
+
+### UV index (`uvi.json` → `uv_index` table → `/uv_index`) and thermal hazard (`gt.json` → `thermal_hazard` table → `/thermal_hazard`)
+
+- Both are **city-based**: 38 cities/mountains (UVI, integer index per day) and 34 cities
+  (thermal, hazard category per fixed-CET slot 03/09/15/21 — `MEZ` means UTC+1 even in summer;
+  stored as UTC timestamps). Day offsets are relative to the files' `forecast_day`.
+- The files identify locations **by name only**. `CityLocationManager` supplies coordinates:
+  primary source is the GeoServer `Uv_Stationen` layer (global station list; all 38 UVI cities
+  match `ALIASNAME` exactly; gt's `Frankfurt`/`List` map via an alias table to
+  `Frankfurt/Main`/`List auf Sylt`). **Five gt-only cities are missing from the layer**
+  (Köln, Schwerin, Saarbrücken, Mannheim, Erfurt) and use a static city-center coordinate
+  table in the manager — the one deliberate exception to "all geometry from the DWD",
+  documented here and transparent in responses (matched `city` + `distance` always returned).
+- Nearest-city resolution is a plain haversine over ≤40 points, capped at 200 km (`NoData`
+  beyond). The endpoints also accept `?city=<name>` or, with no location criteria, return all
+  cities (mirroring `/alerts`).
+
+### If the DWD changes something
+
+The parsers warn on unknown pollen index values and unknown gt slot keys, and skip missing
+values (`-1` for pollen, `null` elsewhere). New zone/city additions flow through automatically
+— except a new gt city missing from `Uv_Stationen`, which silently becomes unresolvable by
+lat/lon (it still appears in `?city=`/all-cities responses) until added to the static table.

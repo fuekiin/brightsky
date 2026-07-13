@@ -70,3 +70,31 @@ bottom. Every session that changes something appends an entry.
   needs no ATS exception.
 - These models/client are the seed of the real pollen feature; when `api.nano-wetter.de`
   serves `/pollen`, route the client through `BrightSkyGateway`.
+
+## 2026-07-14 — Biowetter, UV index, thermal hazard end to end
+
+**Done** (dwdparse `eedb374`; brightsky `71af9fa` deployment doc + tarball pin, `0a15a0f`
+ingestion, `fed84e8` endpoints, + this docs commit):
+
+- Deployment plan for api.nano-wetter.de recorded in `deployment.md` (approved, NOT executed);
+  dwdparse pin switched to a GitHub tarball (no git binary in the slim Docker image).
+- dwdparse: `BiowetterParser`, `UVIndexParser`, `ThermalHazardParser` (54/54 tests).
+- brightsky: migration `0020_health_products.sql` (three tables), `HealthExporter`
+  generalization, three endpoints with zone/city resolution (63/63 tests).
+- **Corrected brief assumptions:** gt.json is city-based (34 cities, "Thermischer
+  Gefahrenindex" categories at fixed-CET slots), NOT region-based; uvi.json city-based as
+  expected; biowetter.json has its own 11 lettered zones and different envelope conventions
+  (`author`, no "Uhr" in timestamps).
+- **Geometry all DWD-sourced with one documented exception:** `Biowettergebiete` layer for
+  zones (GF numbering non-alphabetical: 6=G, 7=F — verified by names), `Uv_Stationen` layer
+  for city coordinates; five gt-only cities (Köln, Schwerin, Saarbrücken, Mannheim, Erfurt)
+  are absent from the layer and use static city-center coordinates in `CityLocationManager` —
+  responses always return the matched city + distance, so nothing resolves silently wrong.
+- Naming decision: endpoints/tables `biowetter`, `uv_index`, `thermal_hazard`; biowetter's
+  `author` normalized into `sender`.
+
+**Open questions / next steps:** (in addition to the 2026-07-13 list)
+
+- [ ] Bump + push both forks; the requirements.txt tarball SHA is now `eedb374…` (dwdparse).
+- [ ] nano app: debug sections / real features for the three new endpoints.
+- [ ] CI workflows (test + image build) per deployment.md.

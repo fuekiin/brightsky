@@ -28,15 +28,16 @@ with a shared envelope (`last_update`, `next_update`, `sender`, `legend`, `conte
 
 | Product | File | Spatial model | Status |
 |---|---|---|---|
-| Pollen hazard index | `s31fg.json` | 27 regions (*Pollenflugbereiche*) | ✅ **Shipped** (2026-07-13): parser, `pollen` table, `/pollen` endpoint, tests |
-| Biowetter | `biowetter.json` | regions (own scheme — verify before building) | ⬜ Open |
-| Gefühlte Temperatur | `gt.json` | regions (own scheme — verify before building) | ⬜ Open |
-| UV index | `uvi.json` | **points** (selected cities/mountains) | ⬜ Open — do LAST; needs nearest-point resolution, not polygons |
+| Pollen hazard index | `s31fg.json` | 27 regions (*Pollenflugbereiche*) | ✅ **Shipped** (2026-07-13): `pollen` table, `/pollen` |
+| Biowetter | `biowetter.json` | 11 zones (A–K) | ✅ **Shipped** (2026-07-14): `biowetter` table, `/biowetter` |
+| Thermal hazard (Gefühlte Temperatur) | `gt.json` | 34 named cities | ✅ **Shipped** (2026-07-14): `thermal_hazard` table, `/thermal_hazard` |
+| UV index | `uvi.json` | 38 named cities/mountains | ✅ **Shipped** (2026-07-14): `uv_index` table, `/uv_index` |
 
-Biowetter and GT are expected to be near-mechanical repeats of the pollen slice (same
-`HealthForecastParser` base in dwdparse, own table + endpoint here) — but **verify their region
-scheme and polygon source first**; do not assume they use the Pollenflugbereiche. UVI is
-point-based and shares none of the region machinery.
+Note: the original brief assumed Biowetter/GT share the pollen region model — they don't.
+Biowetter has its own 11 zones (polygons from the DWD GeoServer `Biowettergebiete` layer);
+GT and UVI are city-based and resolve by nearest city (coordinates from the `Uv_Stationen`
+layer, plus a small static table for five gt-only cities). Details in
+[architecture.md](architecture.md).
 
 ## Where things live
 

@@ -34,7 +34,7 @@ cssselect==1.4.0
 # Bump this SHA after committing+pushing in ../dwdparse (see
 # docs/nano/fork-management.md). For local dev use `pip install -e ../dwdparse`
 # after installing requirements.
-dwdparse @ https://github.com/fuekiin/dwdparse/archive/514ed464b8466de8e9fa19cda22ab7aa2ea412e0.tar.gz
+dwdparse @ https://github.com/fuekiin/dwdparse/archive/eedb374d8a51107b10f98d08bcfb78b6900fd8a1.tar.gz
     # via brightsky (pyproject.toml)
 falcon==4.2.0
     # via brightsky (pyproject.toml)
