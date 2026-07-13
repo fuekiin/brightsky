@@ -746,3 +746,86 @@ class AlertsResponse(ResponseModel):
             'nullable': True,
         },
     )
+
+
+class PollenRecord(ResponseModel):
+    species: Literal[
+        'ambrosia', 'beifuss', 'birke', 'erle',
+        'esche', 'graeser', 'hasel', 'roggen',
+    ] = Field(
+        description="Pollen species, using the DWD's (German) naming",
+    )
+    date: datetime.date = Field(
+        description="Forecast day",
+        examples=[
+            "2026-07-13",
+        ],
+    )
+    index: str = Field(
+        description="DWD pollen hazard index (_Belastungsstufe_), one of `0`, `0-1`, `1`, `1-2`, `2`, `2-3`, `3`",  # noqa
+        examples=[
+            "1-2",
+        ],
+    )
+    severity: float = Field(
+        description="Numeric representation of `index`, from `0` (_keine Belastung_) to `3` (_hohe Belastung_) in steps of `0.5`",  # noqa
+        examples=[
+            1.5,
+        ],
+        json_schema_extra={
+            'nullable': True,
+        },
+    )
+
+
+class PollenLocation(ResponseModel):
+    region_id: int = Field(
+        description="ID of the DWD pollen region (_Pollenflugbereich_)",
+        examples=[
+            50,
+        ],
+    )
+    partregion_id: int = Field(
+        description="ID of the DWD pollen part-region, or `-1` if the region has no part-regions",  # noqa
+        examples=[
+            -1,
+        ],
+    )
+    region_name: str = Field(
+        description="Name of the pollen region",
+        examples=[
+            "Brandenburg und Berlin",
+        ],
+    )
+    partregion_name: str = Field(
+        description="Name of the pollen part-region",
+        examples=[
+            "Inseln und Marschen",
+        ],
+        json_schema_extra={
+            'nullable': True,
+        },
+    )
+
+
+class PollenResponse(ResponseModel):
+    pollen: list[PollenRecord]
+    location: PollenLocation
+    last_update: datetime.datetime = Field(
+        description="Time this forecast was issued by the DWD",
+    )
+    next_update: datetime.datetime = Field(
+        description="Time the next forecast will be issued by the DWD",
+        json_schema_extra={
+            'nullable': True,
+        },
+    )
+    sender: str = Field(
+        description="Issuer of the data (DWD attribution, CC BY 4.0)",
+        examples=[
+            "Deutscher Wetterdienst - Medizin-Meteorologie",
+        ],
+        json_schema_extra={
+            'nullable': True,
+        },
+    )

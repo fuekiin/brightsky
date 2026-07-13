@@ -9,8 +9,8 @@ from fastapi.testclient import TestClient
 
 import brightsky
 from brightsky.export import DBExporter, SYNOPExporter
-from brightsky.parsers import CAPParser, RadarParser
-from brightsky.query import _warn_cells
+from brightsky.parsers import CAPParser, PollenParser, RadarParser
+from brightsky.query import _pollen_regions, _warn_cells
 from brightsky.web import make_app
 
 from .utils import settings
@@ -301,6 +301,18 @@ def alerts_data(db, data_dir):
     fn = 'Z_CAP_C_EDZW_LATEST_PVW_STATUS_PREMIUMDWD_COMMUNEUNION_MUL.zip'
     p.exporter().export(p.parse(data_dir / fn))
     _warn_cells.CELLS_CACHE_PATH = data_dir / 'alert_cells.json'
+
+
+@pytest.fixture
+def pollen_data(db, data_dir):
+    p = PollenParser()
+    records = list(p.parse(data_dir / 's31fg.json'))
+    # Shift forecast dates so that the fixture's 'today' is today
+    shift = datetime.date.today() - min(r['date'] for r in records)
+    for r in records:
+        r['date'] += shift
+    p.exporter().export(iter(records))
+    _pollen_regions.REGIONS_CACHE_PATH = data_dir / 'pollen_regions.json'
 
 
 def test_sources_required_parameters(data, api):
@@ -864,6 +876,51 @@ def test_alerts_response(alerts_data, api):
     assert resp.status_code == 404
     resp = api.get('/alerts?warn_cell_id=0')
     assert resp.status_code == 404
+
+
+def test_pollen_response(pollen_data, api):
+    # Query by lat/lon (Berlin -> region 50, no part-regions)
+    resp = api.get('/pollen?lat=52.52&lon=13.41')
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['location'] == {
+        'region_id': 50,
+        'partregion_id': -1,
+        'region_name': 'Brandenburg und Berlin',
+        'partregion_name': None,
+    }
+    assert data['sender'] == 'Deutscher Wetterdienst - Medizin-Meteorologie'
+    assert data['last_update'] == '2026-07-13T09:00:00+00:00'
+    # 8 species x 3 days, minus one missing value
+    assert len(data['pollen']) == 23
+    assert all(
+        set(r) == {'species', 'date', 'index', 'severity'}
+        for r in data['pollen'])
+    graeser_today = next(
+        r for r in data['pollen']
+        if r['species'] == 'graeser'
+        and r['date'] == datetime.date.today().isoformat())
+    assert graeser_today['index'] == '1-2'
+    assert graeser_today['severity'] == 1.5
+    # Query by region id (part-region 11)
+    resp = api.get('/pollen?region_id=11')
+    assert resp.status_code == 200
+    assert resp.json()['location'] == {
+        'region_id': 10,
+        'partregion_id': 11,
+        'region_name': 'Schleswig-Holstein und Hamburg',
+        'partregion_name': 'Inseln und Marschen',
+    }
+    assert len(resp.json()['pollen']) == 24
+    # Region resolvable, but no data ingested for it (Frankfurt -> GF 92)
+    assert api.get('/pollen?lat=50.11&lon=8.68').status_code == 404
+    # Outside of covered area
+    assert api.get('/pollen?lat=32&lon=7.6').status_code == 404
+    # Unknown region id
+    assert api.get('/pollen?region_id=999').status_code == 404
+    # Missing or incomplete location parameters
+    assert api.get('/pollen').status_code == 422
+    assert api.get('/pollen?lat=52.52').status_code == 422
 
 
 def test_status_response(api):

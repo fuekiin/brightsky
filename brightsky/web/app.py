@@ -18,6 +18,7 @@ from .models import (
     AlertsResponse,
     CurrentWeatherResponse,
     NotFoundResponse,
+    PollenResponse,
     RadarResponse,
     SourcesResponse,
     SynopResponse,
@@ -26,6 +27,7 @@ from .models import (
 from .params import (
     AlertsParams,
     CurrentWeatherParams,
+    PollenParams,
     RadarParams,
     SourcesParams,
     SynopParams,
@@ -525,6 +527,52 @@ async def alerts(
         lat=q.lat,
         lon=q.lon,
         warn_cell_id=q.warn_cell_id,
+    )
+    enhance(result, timezone=q.timezone)
+    return ORJSONResponse(result)
+
+
+@app.get(
+    '/pollen',
+    operation_id='getPollen',
+    summary='Pollen',
+    responses=common_responses,
+)
+async def pollen(
+    q: Annotated[PollenParams, Query()],
+) -> PollenResponse:
+    """
+    Returns the DWD's pollen hazard index (_Pollenflug-Gefahrenindex_) for
+    today, tomorrow, and the day after tomorrow, for the pollen region
+    matching the given location.
+
+    You must supply both `lat` and `lon` _or_ a `region_id`.
+
+    ### Notes
+
+    * The DWD publishes this forecast once per day (in the morning) for 27
+      pollen regions (_Pollenflugbereiche_) covering Germany. Eight species
+      are covered: hazel (`hasel`), alder (`erle`), ash (`esche`), birch
+      (`birke`), grasses (`graeser`), rye (`roggen`), mugwort (`beifuss`),
+      and ragweed (`ambrosia`).
+    * `index` is the raw DWD load level (_Belastungsstufe_), `severity` a
+      numeric mapping of it: `0` (none) to `3` (high) in steps of `0.5`.
+    * The forecast for the day after tomorrow is not always available for
+      all species.
+    * Data source: Deutscher Wetterdienst, licensed CC BY 4.0. The `sender`
+      field contains the attribution.
+
+    ### Additional resources
+
+    * [Raw data on the Open Data Server](https://opendata.dwd.de/climate_environment/health/alerts/)
+    * [DWD file format description (German)](https://opendata.dwd.de/climate_environment/health/alerts/Beschreibung_pollen_s31fg.pdf)
+    * [DWD pollen forecast overview](https://www.dwd.de/pollenflug)
+    """
+    result = await query.pollen(
+        ctx['pool'],
+        lat=q.lat,
+        lon=q.lon,
+        region_id=q.region_id,
     )
     enhance(result, timezone=q.timezone)
     return ORJSONResponse(result)

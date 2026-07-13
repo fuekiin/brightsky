@@ -508,6 +508,103 @@ class WarnCellManager:
 _warn_cells = WarnCellManager()
 
 
+async def pollen(
+    conn,
+    lat=None,
+    lon=None,
+    region_id=None,
+):
+    if lat is not None and lon is not None:
+        region_id = _pollen_regions.find(lat, lon)['region_id']
+    elif region_id is None:
+        raise ValueError("Please supply lat & lon, or region_id")
+    sql = """
+        SELECT *
+        FROM pollen
+        WHERE
+            (partregion_id = {region_id} OR
+             (partregion_id = -1 AND region_id = {region_id})) AND
+            date >= current_date
+        ORDER BY date, species
+    """
+    params = {'region_id': region_id}
+    sql, params = topg(sql, params)
+    rows = make_dicts(await conn.fetch(sql, *params))
+    if not rows:
+        raise NoData("No pollen data for the given location criteria")
+    return {
+        'pollen': [
+            {k: row[k] for k in ['species', 'date', 'index', 'severity']}
+            for row in rows
+        ],
+        'location': {
+            k: rows[0][k]
+            for k in [
+                'region_id', 'partregion_id', 'region_name',
+                'partregion_name',
+            ]
+        },
+        'last_update': rows[0]['last_update'],
+        'next_update': rows[0]['next_update'],
+        'sender': rows[0]['sender'],
+    }
+
+
+class PollenRegionManager:
+    """Resolves lat/lon to DWD pollen regions (Pollenflugbereiche).
+
+    Region polygons come from the DWD GeoServer's 'Pollenfluggebiete'
+    layer, where the 'GF' property matches s31fg.json's partregion_id
+    (or region_id for regions without part-regions).
+    """
+
+    REGIONS_CACHE_PATH = os.path.join(
+        tempfile.gettempdir(), 'pollen_regions.json')
+
+    @cached_property
+    def tree(self):
+        self.region_meta = {}
+        for f in self.get_region_data()['features']:
+            geometry = f['geometry']
+            if geometry['type'] == 'Polygon':
+                coordinates = [geometry['coordinates']]
+            else:
+                coordinates = geometry['coordinates']
+            polygons = [
+                # shell, holes
+                (c[0], c[1:])
+                for c in coordinates
+            ]
+            p = MultiPolygon(polygons)
+            self.region_meta[p] = {
+                'region_id': f['properties']['GF'],
+                'name': f['properties']['GEN'],
+            }
+        return STRtree(list(self.region_meta.keys()))
+
+    def get_region_data(self):
+        path = self.REGIONS_CACHE_PATH
+        if not os.path.isfile(path):
+            resp = requests.get(
+                settings.POLLEN_REGIONS_URL,
+                headers={'User-Agent': USER_AGENT},
+            )
+            with open(path, 'wb') as f:
+                f.write(resp.content)
+        with open(path) as f:
+            return json.load(f)
+
+    def find(self, lat, lon):
+        p = Point(lon, lat)
+        region = self.tree.geometries[self.tree.nearest(p)]
+        if region.distance(p) > 0.01:
+            raise NoData("Requested position is not covered by the DWD")
+        return self.region_meta[region]
+
+
+_pollen_regions = PollenRegionManager()
+
+
 async def sources(
     conn,
     lat=None,

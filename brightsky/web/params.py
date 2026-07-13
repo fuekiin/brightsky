@@ -368,3 +368,29 @@ class AlertsParams(
     LatLon,
 ):
     pass
+
+
+class PollenRegion(BaseModel):
+    region_id: int = Field(
+        default=None,
+        description="DWD pollen region ID. Use the part-region ID where part-regions exist (e.g. 11 for 'Inseln und Marschen'), and the region ID otherwise (e.g. 50 for 'Brandenburg und Berlin').",  # noqa
+        examples=[
+            11,
+            50,
+            124,
+        ],
+    )
+
+
+class PollenParams(
+    Timezone,
+    PollenRegion,
+    LatLon,
+):
+    @model_validator(mode='after')
+    def validate_at_least_one_option(self):
+        if self.lat is not None and self.lon is not None:
+            return self
+        elif self.region_id is not None:
+            return self
+        raise ValueError("Please supply lat & lon, or region_id")

@@ -19,6 +19,8 @@ def enhance(result, timezone=None, units='si'):
         enhance_radar(result['radar'], timezone=timezone)
     if 'alerts' in result:
         enhance_alerts(result['alerts'], timezone=timezone)
+    if 'pollen' in result:
+        enhance_pollen(result, timezone=timezone)
 
 
 def enhance_records(records, source_map, timezone=None, units='si'):
@@ -46,6 +48,11 @@ def enhance_alerts(alerts, timezone=None):
     for alert in alerts:
         for key in ['effective', 'onset', 'expires']:
             process_timestamp(alert, key, timezone)
+
+
+def enhance_pollen(result, timezone=None):
+    for key in ['last_update', 'next_update']:
+        process_timestamp(result, key, timezone)
 
 
 def process_timestamp(o, key, timezone):
