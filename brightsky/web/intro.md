@@ -11,6 +11,7 @@ The public instance at `https://api.brightsky.dev/` is free-to-use for all purpo
 * Check out [`/weather`](operations/getWeather) for hourly weather observations and forecasts.
 * Check out [`/radar`](operations/getRadar) if you're looking for a high-resolution rain radar.
 * Check out [`/alerts`](operations/getAlerts) if you're interested in weather alerts.
+* Check out [`/pollen`](operations/getPollen), [`/biowetter`](operations/getBiowetter), [`/uv_index`](operations/getUVIndex), and [`/thermal_hazard`](operations/getThermalHazard) for the DWD's health forecasts.
 
 ... or keep reading below for some background information.
 
@@ -50,3 +51,6 @@ All data available through Bright Sky is taken or derived from data on the [DWD 
   * https://opendata.dwd.de/weather/radar/composite/rv/
 * **Alerts**:
   * https://opendata.dwd.de/weather/alerts/cap/COMMUNEUNION_DWD_STAT/
+* **Health forecasts** (pollen, Biowetter, UV index, thermal hazard):
+  * https://opendata.dwd.de/climate_environment/health/alerts/
+  * Region and station geometries: https://maps.dwd.de/geoserver/ (layers `Pollenfluggebiete`, `Biowettergebiete`, `Uv_Stationen`)
