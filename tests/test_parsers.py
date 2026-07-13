@@ -9,6 +9,7 @@ from brightsky.parsers import (
     CloudCoverObservationsParser,
     CurrentObservationsParser,
     DewPointObservationsParser,
+    BiowetterParser,
     get_parser,
     MOSMIXParser,
     PollenParser,
@@ -19,6 +20,8 @@ from brightsky.parsers import (
     SunshineObservationsParser,
     SYNOPParser,
     TemperatureObservationsParser,
+    ThermalHazardParser,
+    UVIndexParser,
     VisibilityObservationsParser,
     WindGustsObservationsParser,
     WindObservationsParser,
@@ -132,6 +135,9 @@ def test_get_parser():
         synop_with_timestamp: SYNOPParser,
         synop_latest: None,
         's31fg.json': PollenParser,
+        'biowetter.json': BiowetterParser,
+        'gt.json': ThermalHazardParser,
+        'uvi.json': UVIndexParser,
     }
     for filename, expected_parser in expected.items():
         assert get_parser(filename) is expected_parser

@@ -1,0 +1,45 @@
+{
+ "content": [
+  {
+   "city": "Berlin",
+   "forecast": {
+    "today_03MEZ": "keine",
+    "dayafter_to_15MEZ": "gering",
+    "tomorrow_15MEZ": "mittel",
+    "today_21MEZ": "keine",
+    "tomorrow_21MEZ": "keine",
+    "today_15MEZ": "mittel",
+    "dayafter_to_21MEZ": "keine",
+    "after_threedays_03MEZ": "keine",
+    "dayafter_to_09MEZ": "gering",
+    "tomorrow_03MEZ": "keine",
+    "dayafter_to_03MEZ": "keine",
+    "tomorrow_09MEZ": "keine",
+    "today_09MEZ": "mittel"
+   }
+  },
+  {
+   "city": "Köln",
+   "forecast": {
+    "today_15MEZ": "mittel",
+    "dayafter_to_21MEZ": "keine",
+    "today_21MEZ": "gering",
+    "tomorrow_21MEZ": "keine",
+    "dayafter_to_09MEZ": "mittel",
+    "after_threedays_03MEZ": "keine",
+    "dayafter_to_15MEZ": "mittel",
+    "today_03MEZ": "keine",
+    "tomorrow_15MEZ": "mittel",
+    "tomorrow_09MEZ": "mittel",
+    "today_09MEZ": "mittel",
+    "tomorrow_03MEZ": "keine",
+    "dayafter_to_03MEZ": "keine"
+   }
+  }
+ ],
+ "next_update": "2026-07-14T07:30:00",
+ "last_update": "2026-07-13T07:30:00",
+ "forecast_day": "2026-07-13",
+ "name": "Thermischer Gefahrenindex",
+ "sender": "Deutscher Wetterdienst - Medizin-Meteorologie"
+}

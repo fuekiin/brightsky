@@ -195,3 +195,54 @@ def test_pollen_exporter(db, data_dir):
     assert updated[0]['severity'] == 3.
     assert updated[0]['sender'] == (
         'Deutscher Wetterdienst - Medizin-Meteorologie')
+
+
+def test_biowetter_exporter(db, data_dir):
+    from brightsky.parsers import BiowetterParser
+    p = BiowetterParser()
+    records = list(p.parse(data_dir / 'biowetter.json'))
+    p.exporter().export(iter(records))
+    rows = db.table('biowetter')
+    assert len(rows) == len(records) == 10
+    row = next(
+        r for r in rows
+        if r['zone_id'] == 'E' and str(r['date']) == '2026-07-13')
+    # jsonb round-trip preserves the DWD effect tree
+    assert isinstance(row['effects'], list)
+    assert len(row['effects']) == 7
+    assert row['effects'][0]['value'] == 'hohe Gefährdung'
+    assert len(row['recommendations']) == 4
+    assert row['sender'] == 'Medizin-Meteorologie'
+    # Upsert, no duplication
+    p.exporter().export(iter(records))
+    assert len(db.table('biowetter')) == 10
+
+
+def test_uv_index_exporter(db, data_dir):
+    from brightsky.parsers import UVIndexParser
+    p = UVIndexParser()
+    records = list(p.parse(data_dir / 'uvi.json'))
+    p.exporter().export(iter(records))
+    rows = db.table('uv_index')
+    assert len(rows) == len(records) == 9
+    assert {
+        r['uv_index'] for r in rows if r['city'] == 'Zugspitze'
+    } == {9, 6, 5}
+    p.exporter().export(iter(records))
+    assert len(db.table('uv_index')) == 9
+
+
+def test_thermal_hazard_exporter(db, data_dir):
+    from brightsky.parsers import ThermalHazardParser
+    p = ThermalHazardParser()
+    records = list(p.parse(data_dir / 'gt.json'))
+    p.exporter().export(iter(records))
+    rows = db.table('thermal_hazard')
+    assert len(rows) == len(records) == 26
+    row = next(
+        r for r in rows
+        if r['city'] == 'Berlin' and r['timestamp'] == datetime.datetime(
+            2026, 7, 13, 14, tzinfo=tzutc()))
+    assert row['level'] == 'mittel'
+    p.exporter().export(iter(records))
+    assert len(db.table('thermal_hazard')) == 26

@@ -1,0 +1,33 @@
+{
+ "last_update": "2026-07-13T07:30:00",
+ "name": "UV-Gefahrenindex",
+ "sender": "Deutscher Wetterdienst - Medizin-Meteorologie",
+ "next_update": "2026-07-14T07:30:00",
+ "forecast_day": "2026-07-13",
+ "content": [
+  {
+   "city": "Berlin",
+   "forecast": {
+    "today": 5,
+    "dayafter_to": 5,
+    "tomorrow": 4
+   }
+  },
+  {
+   "forecast": {
+    "today": 5,
+    "tomorrow": 5,
+    "dayafter_to": 6
+   },
+   "city": "List auf Sylt"
+  },
+  {
+   "city": "Zugspitze",
+   "forecast": {
+    "today": 9,
+    "tomorrow": 6,
+    "dayafter_to": 5
+   }
+  }
+ ]
+}

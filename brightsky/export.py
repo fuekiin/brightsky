@@ -4,7 +4,7 @@ from itertools import islice
 from threading import Lock
 
 from psycopg2 import sql
-from psycopg2.extras import execute_values
+from psycopg2.extras import execute_values, Json
 
 from brightsky.db import get_connection
 
@@ -406,15 +406,59 @@ class AlertExporter(DBExporter):
             )
 
 
-class PollenExporter(DBExporter):
+class HealthExporter(DBExporter):
+    """Generic upsert exporter for the DWD health product tables.
 
-    UPDATE_POLLEN_STMT = sql.SQL("""
-        INSERT INTO pollen ({fields})
+    Health records carry their own spatial key (region/zone/city) instead
+    of belonging to a source, so unlike DBExporter there are no sources to
+    maintain — records are upserted straight into TABLE on its
+    '<TABLE>_key' constraint.
+    """
+
+    TABLE = None
+
+    UPDATE_HEALTH_STMT = sql.SQL("""
+        INSERT INTO {table} ({fields})
         VALUES %s
         ON CONFLICT
-            ON CONSTRAINT pollen_key DO UPDATE SET
+            ON CONSTRAINT {constraint} DO UPDATE SET
                 {conflict_updates};
     """)
+
+    def export(self, records, fingerprint=None):
+        with get_connection() as conn:
+            for batch in batched(records, self.BATCH_SIZE):
+                self.update_health(conn, batch)
+            if fingerprint:
+                self.update_parsed_files(conn, fingerprint)
+            conn.commit()
+
+    def update_health(self, conn, batch):
+        batch = self.prepare_records(batch)
+        for fields, records in self.make_batches(batch).items():
+            logger.info(
+                "Exporting %d %s records with fields %s",
+                len(records), self.TABLE, tuple(fields))
+            stmt = self.UPDATE_HEALTH_STMT.format(
+                table=sql.Identifier(self.TABLE),
+                constraint=sql.Identifier(f'{self.TABLE}_key'),
+                fields=sql.SQL(', ').join(sql.Identifier(f) for f in fields),
+                conflict_updates=sql.SQL(', ').join(
+                    sql.SQL('{field} = EXCLUDED.{field}').format(
+                        field=sql.Identifier(f))
+                    for f in fields),
+            )
+            template = sql.SQL('({values})').format(
+                values=sql.SQL(', ').join(
+                    sql.Placeholder(f) for f in fields),
+            )
+            with conn.cursor() as cur:
+                execute_values(cur, stmt, records, template, page_size=1000)
+
+
+class PollenExporter(HealthExporter):
+
+    TABLE = 'pollen'
     ELEMENT_FIELDS = [
         'region_id',
         'partregion_id',
@@ -429,29 +473,53 @@ class PollenExporter(DBExporter):
         'sender',
     ]
 
-    def export(self, records, fingerprint=None):
-        with get_connection() as conn:
-            for batch in batched(records, self.BATCH_SIZE):
-                self.update_pollen(conn, batch)
-            if fingerprint:
-                self.update_parsed_files(conn, fingerprint)
-            conn.commit()
 
-    def update_pollen(self, conn, records):
-        for fields, records in self.make_batches(records).items():
-            logger.info(
-                "Exporting %d pollen records with fields %s",
-                len(records), tuple(fields))
-            stmt = self.UPDATE_POLLEN_STMT.format(
-                fields=sql.SQL(', ').join(sql.Identifier(f) for f in fields),
-                conflict_updates=sql.SQL(', ').join(
-                    sql.SQL('{field} = EXCLUDED.{field}').format(
-                        field=sql.Identifier(f))
-                    for f in fields),
-            )
-            template = sql.SQL('({values})').format(
-                values=sql.SQL(', ').join(
-                    sql.Placeholder(f) for f in fields),
-            )
-            with conn.cursor() as cur:
-                execute_values(cur, stmt, records, template, page_size=1000)
+class BiowetterExporter(HealthExporter):
+
+    TABLE = 'biowetter'
+    ELEMENT_FIELDS = [
+        'zone_id',
+        'zone_name',
+        'date',
+        'period',
+        'weather_class',
+        'effects',
+        'recommendations',
+        'last_update',
+        'next_update',
+        'sender',
+    ]
+
+    def prepare_records(self, records):
+        records = [dict(r) for r in records]
+        for r in records:
+            for field in ('effects', 'recommendations'):
+                if r.get(field) is not None:
+                    r[field] = Json(r[field])
+        return records
+
+
+class UVIndexExporter(HealthExporter):
+
+    TABLE = 'uv_index'
+    ELEMENT_FIELDS = [
+        'city',
+        'date',
+        'uv_index',
+        'last_update',
+        'next_update',
+        'sender',
+    ]
+
+
+class ThermalHazardExporter(HealthExporter):
+
+    TABLE = 'thermal_hazard'
+    ELEMENT_FIELDS = [
+        'city',
+        'timestamp',
+        'level',
+        'last_update',
+        'next_update',
+        'sender',
+    ]

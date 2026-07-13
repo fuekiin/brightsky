@@ -10,10 +10,13 @@ from isal import isal_zlib as zlib
 from brightsky.db import fetch
 from brightsky.export import (
     AlertExporter,
+    BiowetterExporter,
     DBExporter,
     PollenExporter,
     RadarExporter,
     SYNOPExporter,
+    ThermalHazardExporter,
+    UVIndexExporter,
 )
 from brightsky.settings import settings
 
@@ -231,11 +234,35 @@ class PollenParser(BrightSkyMixin, dwdparse.parsers.PollenParser):
     exporter = PollenExporter
 
 
+class BiowetterParser(BrightSkyMixin, dwdparse.parsers.BiowetterParser):
+
+    PRIORITY = 30
+    exporter = BiowetterExporter
+
+
+class UVIndexParser(BrightSkyMixin, dwdparse.parsers.UVIndexParser):
+
+    PRIORITY = 30
+    exporter = UVIndexExporter
+
+
+class ThermalHazardParser(
+    BrightSkyMixin,
+    dwdparse.parsers.ThermalHazardParser,
+):
+
+    PRIORITY = 30
+    exporter = ThermalHazardExporter
+
+
 def get_parser(filename):
     parsers = {
         r'MOSMIX_(S|L)_LATEST(_240)?\.kmz$': MOSMIXParser,
         r'Z_CAP_C_EDZW_LATEST_.*_COMMUNEUNION_MUL\.zip': CAPParser,
         r's31fg\.json$': PollenParser,
+        r'biowetter\.json$': BiowetterParser,
+        r'gt\.json$': ThermalHazardParser,
+        r'uvi\.json$': UVIndexParser,
         r'Z__C_EDZW_\d+_.*\.json\.bz2$': SYNOPParser,
         r'\w{5}-BEOB\.csv$': CurrentObservationsParser,
         'composite_rv_': RadarParser,

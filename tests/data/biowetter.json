@@ -1,0 +1,1046 @@
+{
+ "name": "dwd_healthweather",
+ "author": "Medizin-Meteorologie",
+ "last_update": "2026-07-13 11:00",
+ "next_update": "2026-07-14 11:00",
+ "zone": [
+  {
+   "tomorrow_afternoon": {
+    "date": "2026-07-14",
+    "recomms": [
+     {
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, - Vorsicht im Straßenverkehr",
+      "name": "Wettereinfluss auf das allgemeine Befinden"
+     },
+     {
+      "name": "Wettereinfluss auf das Herz- und Kreislaufgeschehen",
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, tagsüber: Vermeidung ungewohnter Aktivitäten, - Vorsicht im Straßenverkehr"
+     },
+     {
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, - Vorsicht im Straßenverkehr",
+      "name": "Wettereinfluss auf rheumatische Beschwerden"
+     },
+     {
+      "name": "Wettereinfluss auf Asthma",
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, - Vorsicht im Straßenverkehr"
+     }
+    ],
+    "name": "2. Tageshälfte",
+    "value": "5-0-w2",
+    "effect": [
+     {
+      "name": "Wettereinfluss auf das allgemeine Befinden",
+      "value": "geringe Gefährdung",
+      "subeffect": [
+       {
+        "name": "psychisch-geistige Leistungsfähigkeit",
+        "value": "geringe Gefährdung"
+       },
+       {
+        "name": "Schmerzempfindlichkeit",
+        "value": "kein Einfluss"
+       },
+       {
+        "name": "Kopfschmerz- bzw. Migräneanfälligkeit",
+        "value": "geringe Gefährdung"
+       },
+       {
+        "value": "geringe Gefährdung",
+        "name": "Schlafqualität"
+       },
+       {
+        "name": "Konzentrations- und Leistungsfähigkeit",
+        "value": "geringe Gefährdung"
+       },
+       {
+        "name": "Reizbarkeit und motorische Unruhe",
+        "value": "kein Einfluss"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Bereitschaft zu Depressionen"
+       }
+      ]
+     },
+     {
+      "value": "geringe Gefährdung",
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypotone Form)",
+      "subeffect": [
+       {
+        "value": "geringe Gefährdung",
+        "name": "Anfälligkeit für Kreislaufbeschwerden (Mattigkeit, Schwindel)"
+       },
+       {
+        "name": "Kopfschmerz-Anfälligkeit",
+        "value": "geringe Gefährdung"
+       }
+      ]
+     },
+     {
+      "value": "geringe Gefährdung",
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypertone Form)",
+      "subeffect": [
+       {
+        "value": "geringe Gefährdung",
+        "name": "Anfälligkeit für Herz-Kreislaufbeschwerden"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Angina-pectoris-Anfälligkeit"
+       }
+      ]
+     },
+     {
+      "name": "Wettereinfluss auf entzündliche rheumatische Beschwerden",
+      "value": "geringe Gefährdung"
+     },
+     {
+      "name": "Wettereinfluss auf degenerative rheumatische Beschwerden",
+      "value": "kein Einfluss"
+     },
+     {
+      "value": "kein Einfluss",
+      "name": "Wettereinfluss auf Asthma"
+     },
+     {
+      "name": "Thermische Belastung",
+      "value": "mäßige Wärmebelastung"
+     }
+    ]
+   },
+   "dayafter_to_afternoon": {
+    "value": "5-0-w2",
+    "name": "2. Tageshälfte",
+    "effect": [
+     {
+      "value": "geringe Gefährdung",
+      "name": "Wettereinfluss auf das allgemeine Befinden",
+      "subeffect": [
+       {
+        "name": "psychisch-geistige Leistungsfähigkeit",
+        "value": "geringe Gefährdung"
+       },
+       {
+        "name": "Schmerzempfindlichkeit",
+        "value": "kein Einfluss"
+       },
+       {
+        "value": "geringe Gefährdung",
+        "name": "Kopfschmerz- bzw. Migräneanfälligkeit"
+       },
+       {
+        "name": "Schlafqualität",
+        "value": "geringe Gefährdung"
+       },
+       {
+        "name": "Konzentrations- und Leistungsfähigkeit",
+        "value": "geringe Gefährdung"
+       },
+       {
+        "name": "Reizbarkeit und motorische Unruhe",
+        "value": "kein Einfluss"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Bereitschaft zu Depressionen"
+       }
+      ]
+     },
+     {
+      "subeffect": [
+       {
+        "name": "Anfälligkeit für Kreislaufbeschwerden (Mattigkeit, Schwindel)",
+        "value": "geringe Gefährdung"
+       },
+       {
+        "name": "Kopfschmerz-Anfälligkeit",
+        "value": "geringe Gefährdung"
+       }
+      ],
+      "value": "geringe Gefährdung",
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypotone Form)"
+     },
+     {
+      "subeffect": [
+       {
+        "name": "Anfälligkeit für Herz-Kreislaufbeschwerden",
+        "value": "geringe Gefährdung"
+       },
+       {
+        "name": "Angina-pectoris-Anfälligkeit",
+        "value": "kein Einfluss"
+       }
+      ],
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypertone Form)",
+      "value": "geringe Gefährdung"
+     },
+     {
+      "name": "Wettereinfluss auf entzündliche rheumatische Beschwerden",
+      "value": "geringe Gefährdung"
+     },
+     {
+      "value": "kein Einfluss",
+      "name": "Wettereinfluss auf degenerative rheumatische Beschwerden"
+     },
+     {
+      "name": "Wettereinfluss auf Asthma",
+      "value": "kein Einfluss"
+     },
+     {
+      "name": "Thermische Belastung",
+      "value": "mäßige Wärmebelastung"
+     }
+    ],
+    "date": "2026-07-15",
+    "recomms": [
+     {
+      "name": "Wettereinfluss auf das allgemeine Befinden",
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, - Vorsicht im Straßenverkehr"
+     },
+     {
+      "name": "Wettereinfluss auf das Herz- und Kreislaufgeschehen",
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, tagsüber: Vermeidung ungewohnter Aktivitäten, - Vorsicht im Straßenverkehr"
+     },
+     {
+      "name": "Wettereinfluss auf rheumatische Beschwerden",
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, - Vorsicht im Straßenverkehr"
+     },
+     {
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, - Vorsicht im Straßenverkehr",
+      "name": "Wettereinfluss auf Asthma"
+     }
+    ]
+   },
+   "today_afternoon": {
+    "effect": [
+     {
+      "subeffect": [
+       {
+        "value": "geringe Gefährdung",
+        "name": "psychisch-geistige Leistungsfähigkeit"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Schmerzempfindlichkeit"
+       },
+       {
+        "value": "geringe Gefährdung",
+        "name": "Kopfschmerz- bzw. Migräneanfälligkeit"
+       },
+       {
+        "name": "Schlafqualität",
+        "value": "geringe Gefährdung"
+       },
+       {
+        "name": "Konzentrations- und Leistungsfähigkeit",
+        "value": "geringe Gefährdung"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Reizbarkeit und motorische Unruhe"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Bereitschaft zu Depressionen"
+       }
+      ],
+      "value": "geringe Gefährdung",
+      "name": "Wettereinfluss auf das allgemeine Befinden"
+     },
+     {
+      "subeffect": [
+       {
+        "value": "geringe Gefährdung",
+        "name": "Anfälligkeit für Kreislaufbeschwerden (Mattigkeit, Schwindel)"
+       },
+       {
+        "value": "geringe Gefährdung",
+        "name": "Kopfschmerz-Anfälligkeit"
+       }
+      ],
+      "value": "geringe Gefährdung",
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypotone Form)"
+     },
+     {
+      "subeffect": [
+       {
+        "name": "Anfälligkeit für Herz-Kreislaufbeschwerden",
+        "value": "geringe Gefährdung"
+       },
+       {
+        "name": "Angina-pectoris-Anfälligkeit",
+        "value": "kein Einfluss"
+       }
+      ],
+      "value": "geringe Gefährdung",
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypertone Form)"
+     },
+     {
+      "value": "geringe Gefährdung",
+      "name": "Wettereinfluss auf entzündliche rheumatische Beschwerden"
+     },
+     {
+      "value": "kein Einfluss",
+      "name": "Wettereinfluss auf degenerative rheumatische Beschwerden"
+     },
+     {
+      "name": "Wettereinfluss auf Asthma",
+      "value": "kein Einfluss"
+     },
+     {
+      "name": "Thermische Belastung",
+      "value": "mäßige Wärmebelastung"
+     }
+    ],
+    "name": "2. Tageshälfte",
+    "value": "5-0-w2",
+    "recomms": [
+     {
+      "name": "Wettereinfluss auf das allgemeine Befinden",
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, - Vorsicht im Straßenverkehr"
+     },
+     {
+      "name": "Wettereinfluss auf das Herz- und Kreislaufgeschehen",
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, tagsüber: Vermeidung ungewohnter Aktivitäten, - Vorsicht im Straßenverkehr"
+     },
+     {
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, - Vorsicht im Straßenverkehr",
+      "name": "Wettereinfluss auf rheumatische Beschwerden"
+     },
+     {
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, - Vorsicht im Straßenverkehr",
+      "name": "Wettereinfluss auf Asthma"
+     }
+    ],
+    "date": "2026-07-13"
+   },
+   "id": "A",
+   "dayafter_to_morning": {
+    "value": "5-0-w1",
+    "name": "1. Tageshälfte",
+    "effect": [
+     {
+      "name": "Wettereinfluss auf das allgemeine Befinden",
+      "value": "kein Einfluss",
+      "subeffect": [
+       {
+        "name": "psychisch-geistige Leistungsfähigkeit",
+        "value": "kein Einfluss"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Schmerzempfindlichkeit"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Kopfschmerz- bzw. Migräneanfälligkeit"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Schlafqualität"
+       },
+       {
+        "name": "Konzentrations- und Leistungsfähigkeit",
+        "value": "kein Einfluss"
+       },
+       {
+        "name": "Reizbarkeit und motorische Unruhe",
+        "value": "kein Einfluss"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Bereitschaft zu Depressionen"
+       }
+      ]
+     },
+     {
+      "value": "geringe Gefährdung",
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypotone Form)",
+      "subeffect": [
+       {
+        "name": "Anfälligkeit für Kreislaufbeschwerden (Mattigkeit, Schwindel)",
+        "value": "geringe Gefährdung"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Kopfschmerz-Anfälligkeit"
+       }
+      ]
+     },
+     {
+      "value": "kein Einfluss",
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypertone Form)",
+      "subeffect": [
+       {
+        "name": "Anfälligkeit für Herz-Kreislaufbeschwerden",
+        "value": "kein Einfluss"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Angina-pectoris-Anfälligkeit"
+       }
+      ]
+     },
+     {
+      "value": "kein Einfluss",
+      "name": "Wettereinfluss auf entzündliche rheumatische Beschwerden"
+     },
+     {
+      "name": "Wettereinfluss auf degenerative rheumatische Beschwerden",
+      "value": "kein Einfluss"
+     },
+     {
+      "name": "Wettereinfluss auf Asthma",
+      "value": "kein Einfluss"
+     },
+     {
+      "name": "Thermische Belastung",
+      "value": "schwache Wärmebelastung"
+     }
+    ],
+    "date": "2026-07-15",
+    "recomms": [
+     {
+      "name": "Wettereinfluss auf das allgemeine Befinden",
+      "value": "Bewegung im Freien in den kühleren Morgen- und Abendstunden zur Stärkung der Abwehrkräfte"
+     },
+     {
+      "name": "Wettereinfluss auf das Herz- und Kreislaufgeschehen",
+      "value": "Bewegung im Freien in den kühleren Morgen- und Abendstunden zur Stärkung der Abwehrkräfte"
+     },
+     {
+      "name": "Wettereinfluss auf rheumatische Beschwerden",
+      "value": "Bewegung im Freien in den kühleren Morgen- und Abendstunden zur Stärkung der Abwehrkräfte"
+     },
+     {
+      "value": "Bewegung im Freien in den kühleren Morgen- und Abendstunden zur Stärkung der Abwehrkräfte",
+      "name": "Wettereinfluss auf Asthma"
+     }
+    ]
+   },
+   "tomorrow_morning": {
+    "name": "1. Tageshälfte",
+    "value": "5-0-00",
+    "effect": [
+     {
+      "name": "Wettereinfluss auf das allgemeine Befinden",
+      "value": "kein Einfluss",
+      "subeffect": [
+       {
+        "value": "kein Einfluss",
+        "name": "psychisch-geistige Leistungsfähigkeit"
+       },
+       {
+        "name": "Schmerzempfindlichkeit",
+        "value": "kein Einfluss"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Kopfschmerz- bzw. Migräneanfälligkeit"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Schlafqualität"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Konzentrations- und Leistungsfähigkeit"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Reizbarkeit und motorische Unruhe"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Bereitschaft zu Depressionen"
+       }
+      ]
+     },
+     {
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypotone Form)",
+      "value": "kein Einfluss",
+      "subeffect": [
+       {
+        "value": "kein Einfluss",
+        "name": "Anfälligkeit für Kreislaufbeschwerden (Mattigkeit, Schwindel)"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Kopfschmerz-Anfälligkeit"
+       }
+      ]
+     },
+     {
+      "subeffect": [
+       {
+        "value": "kein Einfluss",
+        "name": "Anfälligkeit für Herz-Kreislaufbeschwerden"
+       },
+       {
+        "name": "Angina-pectoris-Anfälligkeit",
+        "value": "kein Einfluss"
+       }
+      ],
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypertone Form)",
+      "value": "kein Einfluss"
+     },
+     {
+      "value": "kein Einfluss",
+      "name": "Wettereinfluss auf entzündliche rheumatische Beschwerden"
+     },
+     {
+      "name": "Wettereinfluss auf degenerative rheumatische Beschwerden",
+      "value": "kein Einfluss"
+     },
+     {
+      "name": "Wettereinfluss auf Asthma",
+      "value": "kein Einfluss"
+     },
+     {
+      "value": "keine",
+      "name": "Thermische Belastung"
+     }
+    ],
+    "date": "2026-07-14",
+    "recomms": [
+     {
+      "value": "Bewegung im Freien zur Stärkung der Abwehrkräfte",
+      "name": "Wettereinfluss auf das allgemeine Befinden"
+     },
+     {
+      "value": "Bewegung im Freien zur Stärkung der Abwehrkräfte",
+      "name": "Wettereinfluss auf das Herz- und Kreislaufgeschehen"
+     },
+     {
+      "name": "Wettereinfluss auf rheumatische Beschwerden",
+      "value": "Bewegung im Freien zur Stärkung der Abwehrkräfte"
+     },
+     {
+      "value": "Bewegung im Freien zur Stärkung der Abwehrkräfte",
+      "name": "Wettereinfluss auf Asthma"
+     }
+    ]
+   },
+   "name": "Schleswig-Holstein, Hamburg, nördl. Niedersachsen, Bremen"
+  },
+  {
+   "today_afternoon": {
+    "effect": [
+     {
+      "name": "Wettereinfluss auf das allgemeine Befinden",
+      "value": "hohe Gefährdung",
+      "subeffect": [
+       {
+        "value": "hohe Gefährdung",
+        "name": "psychisch-geistige Leistungsfähigkeit"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Schmerzempfindlichkeit"
+       },
+       {
+        "name": "Kopfschmerz- bzw. Migräneanfälligkeit",
+        "value": "hohe Gefährdung"
+       },
+       {
+        "name": "Schlafqualität",
+        "value": "hohe Gefährdung"
+       },
+       {
+        "name": "Konzentrations- und Leistungsfähigkeit",
+        "value": "hohe Gefährdung"
+       },
+       {
+        "name": "Reizbarkeit und motorische Unruhe",
+        "value": "hohe Gefährdung"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Bereitschaft zu Depressionen"
+       }
+      ]
+     },
+     {
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypotone Form)",
+      "value": "hohe Gefährdung",
+      "subeffect": [
+       {
+        "value": "hohe Gefährdung",
+        "name": "Anfälligkeit für Kreislaufbeschwerden (Mattigkeit, Schwindel)"
+       },
+       {
+        "value": "hohe Gefährdung",
+        "name": "Kopfschmerz-Anfälligkeit"
+       }
+      ]
+     },
+     {
+      "subeffect": [
+       {
+        "name": "Anfälligkeit für Herz-Kreislaufbeschwerden",
+        "value": "hohe Gefährdung"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Angina-pectoris-Anfälligkeit"
+       }
+      ],
+      "value": "hohe Gefährdung",
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypertone Form)"
+     },
+     {
+      "name": "Wettereinfluss auf entzündliche rheumatische Beschwerden",
+      "value": "hohe Gefährdung"
+     },
+     {
+      "name": "Wettereinfluss auf degenerative rheumatische Beschwerden",
+      "value": "kein Einfluss"
+     },
+     {
+      "value": "geringe Gefährdung",
+      "name": "Wettereinfluss auf Asthma"
+     },
+     {
+      "value": "starke Wärmebelastung",
+      "name": "Thermische Belastung"
+     }
+    ],
+    "name": "2. Tageshälfte",
+    "value": "5-0-w3",
+    "recomms": [
+     {
+      "value": "Aufenthalt im Freien mittags und nachmittags vermeiden,  ausreichende Flüssigkeitszufuhr, leichte Kost - erhöhte Fürsorge für ältere Menschen und Kinder, erhöhte Vorsicht im Straßenverkehr",
+      "name": "Wettereinfluss auf das allgemeine Befinden"
+     },
+     {
+      "name": "Wettereinfluss auf das Herz- und Kreislaufgeschehen",
+      "value": "Aufenthalt im Freien mittags und nachmittags vermeiden,  ausreichende Flüssigkeitszufuhr, leichte Kost - erhöhte Fürsorge für ältere Menschen und Kinder, erhöhte Vorsicht im Straßenverkehr"
+     },
+     {
+      "name": "Wettereinfluss auf rheumatische Beschwerden",
+      "value": "Aufenthalt im Freien mittags und nachmittags vermeiden,  ausreichende Flüssigkeitszufuhr, leichte Kost - erhöhte Fürsorge für ältere Menschen und Kinder, erhöhte Vorsicht im Straßenverkehr"
+     },
+     {
+      "value": "Aufenthalt im Freien mittags und nachmittags vermeiden, ausreichende Flüssigkeitszufuhr, leichte Kost - erhöhte Fürsorge für ältere Menschen und Kinder, erhöhte Vorsicht im Straßenverkehr",
+      "name": "Wettereinfluss auf Asthma"
+     }
+    ],
+    "date": "2026-07-13"
+   },
+   "dayafter_to_afternoon": {
+    "value": "5-0-w2",
+    "name": "2. Tageshälfte",
+    "effect": [
+     {
+      "subeffect": [
+       {
+        "name": "psychisch-geistige Leistungsfähigkeit",
+        "value": "geringe Gefährdung"
+       },
+       {
+        "name": "Schmerzempfindlichkeit",
+        "value": "kein Einfluss"
+       },
+       {
+        "name": "Kopfschmerz- bzw. Migräneanfälligkeit",
+        "value": "geringe Gefährdung"
+       },
+       {
+        "value": "geringe Gefährdung",
+        "name": "Schlafqualität"
+       },
+       {
+        "value": "geringe Gefährdung",
+        "name": "Konzentrations- und Leistungsfähigkeit"
+       },
+       {
+        "name": "Reizbarkeit und motorische Unruhe",
+        "value": "kein Einfluss"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Bereitschaft zu Depressionen"
+       }
+      ],
+      "name": "Wettereinfluss auf das allgemeine Befinden",
+      "value": "geringe Gefährdung"
+     },
+     {
+      "subeffect": [
+       {
+        "value": "geringe Gefährdung",
+        "name": "Anfälligkeit für Kreislaufbeschwerden (Mattigkeit, Schwindel)"
+       },
+       {
+        "value": "geringe Gefährdung",
+        "name": "Kopfschmerz-Anfälligkeit"
+       }
+      ],
+      "value": "geringe Gefährdung",
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypotone Form)"
+     },
+     {
+      "value": "geringe Gefährdung",
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypertone Form)",
+      "subeffect": [
+       {
+        "value": "geringe Gefährdung",
+        "name": "Anfälligkeit für Herz-Kreislaufbeschwerden"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Angina-pectoris-Anfälligkeit"
+       }
+      ]
+     },
+     {
+      "name": "Wettereinfluss auf entzündliche rheumatische Beschwerden",
+      "value": "geringe Gefährdung"
+     },
+     {
+      "name": "Wettereinfluss auf degenerative rheumatische Beschwerden",
+      "value": "kein Einfluss"
+     },
+     {
+      "name": "Wettereinfluss auf Asthma",
+      "value": "kein Einfluss"
+     },
+     {
+      "value": "mäßige Wärmebelastung",
+      "name": "Thermische Belastung"
+     }
+    ],
+    "date": "2026-07-15",
+    "recomms": [
+     {
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, - Vorsicht im Straßenverkehr",
+      "name": "Wettereinfluss auf das allgemeine Befinden"
+     },
+     {
+      "name": "Wettereinfluss auf das Herz- und Kreislaufgeschehen",
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, tagsüber: Vermeidung ungewohnter Aktivitäten, - Vorsicht im Straßenverkehr"
+     },
+     {
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, - Vorsicht im Straßenverkehr",
+      "name": "Wettereinfluss auf rheumatische Beschwerden"
+     },
+     {
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, - Vorsicht im Straßenverkehr",
+      "name": "Wettereinfluss auf Asthma"
+     }
+    ]
+   },
+   "id": "E",
+   "tomorrow_afternoon": {
+    "recomms": [
+     {
+      "name": "Wettereinfluss auf das allgemeine Befinden",
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, - Vorsicht im Straßenverkehr"
+     },
+     {
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, tagsüber: Vermeidung ungewohnter Aktivitäten, - Vorsicht im Straßenverkehr",
+      "name": "Wettereinfluss auf das Herz- und Kreislaufgeschehen"
+     },
+     {
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, - Vorsicht im Straßenverkehr",
+      "name": "Wettereinfluss auf rheumatische Beschwerden"
+     },
+     {
+      "name": "Wettereinfluss auf Asthma",
+      "value": "Aufenthalt im Freien in den kühleren Morgen- und Abendstunden bevorzugen, ausreichende Flüssigkeitszufuhr, - Vorsicht im Straßenverkehr"
+     }
+    ],
+    "date": "2026-07-14",
+    "effect": [
+     {
+      "subeffect": [
+       {
+        "name": "psychisch-geistige Leistungsfähigkeit",
+        "value": "geringe Gefährdung"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Schmerzempfindlichkeit"
+       },
+       {
+        "value": "geringe Gefährdung",
+        "name": "Kopfschmerz- bzw. Migräneanfälligkeit"
+       },
+       {
+        "name": "Schlafqualität",
+        "value": "geringe Gefährdung"
+       },
+       {
+        "value": "geringe Gefährdung",
+        "name": "Konzentrations- und Leistungsfähigkeit"
+       },
+       {
+        "name": "Reizbarkeit und motorische Unruhe",
+        "value": "kein Einfluss"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Bereitschaft zu Depressionen"
+       }
+      ],
+      "name": "Wettereinfluss auf das allgemeine Befinden",
+      "value": "geringe Gefährdung"
+     },
+     {
+      "subeffect": [
+       {
+        "value": "geringe Gefährdung",
+        "name": "Anfälligkeit für Kreislaufbeschwerden (Mattigkeit, Schwindel)"
+       },
+       {
+        "value": "geringe Gefährdung",
+        "name": "Kopfschmerz-Anfälligkeit"
+       }
+      ],
+      "value": "geringe Gefährdung",
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypotone Form)"
+     },
+     {
+      "subeffect": [
+       {
+        "value": "geringe Gefährdung",
+        "name": "Anfälligkeit für Herz-Kreislaufbeschwerden"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Angina-pectoris-Anfälligkeit"
+       }
+      ],
+      "value": "geringe Gefährdung",
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypertone Form)"
+     },
+     {
+      "value": "geringe Gefährdung",
+      "name": "Wettereinfluss auf entzündliche rheumatische Beschwerden"
+     },
+     {
+      "value": "kein Einfluss",
+      "name": "Wettereinfluss auf degenerative rheumatische Beschwerden"
+     },
+     {
+      "name": "Wettereinfluss auf Asthma",
+      "value": "kein Einfluss"
+     },
+     {
+      "name": "Thermische Belastung",
+      "value": "mäßige Wärmebelastung"
+     }
+    ],
+    "value": "5-0-w2",
+    "name": "2. Tageshälfte"
+   },
+   "name": "Berlin, Brandenburg und im nördlichen Sachsen-Anhalt",
+   "dayafter_to_morning": {
+    "effect": [
+     {
+      "subeffect": [
+       {
+        "value": "kein Einfluss",
+        "name": "psychisch-geistige Leistungsfähigkeit"
+       },
+       {
+        "name": "Schmerzempfindlichkeit",
+        "value": "kein Einfluss"
+       },
+       {
+        "name": "Kopfschmerz- bzw. Migräneanfälligkeit",
+        "value": "kein Einfluss"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Schlafqualität"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Konzentrations- und Leistungsfähigkeit"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Reizbarkeit und motorische Unruhe"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Bereitschaft zu Depressionen"
+       }
+      ],
+      "name": "Wettereinfluss auf das allgemeine Befinden",
+      "value": "kein Einfluss"
+     },
+     {
+      "subeffect": [
+       {
+        "value": "kein Einfluss",
+        "name": "Anfälligkeit für Kreislaufbeschwerden (Mattigkeit, Schwindel)"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Kopfschmerz-Anfälligkeit"
+       }
+      ],
+      "value": "kein Einfluss",
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypotone Form)"
+     },
+     {
+      "subeffect": [
+       {
+        "value": "kein Einfluss",
+        "name": "Anfälligkeit für Herz-Kreislaufbeschwerden"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Angina-pectoris-Anfälligkeit"
+       }
+      ],
+      "value": "kein Einfluss",
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypertone Form)"
+     },
+     {
+      "value": "kein Einfluss",
+      "name": "Wettereinfluss auf entzündliche rheumatische Beschwerden"
+     },
+     {
+      "name": "Wettereinfluss auf degenerative rheumatische Beschwerden",
+      "value": "kein Einfluss"
+     },
+     {
+      "name": "Wettereinfluss auf Asthma",
+      "value": "kein Einfluss"
+     },
+     {
+      "value": "keine",
+      "name": "Thermische Belastung"
+     }
+    ],
+    "name": "1. Tageshälfte",
+    "value": "5-0-00",
+    "recomms": [
+     {
+      "name": "Wettereinfluss auf das allgemeine Befinden",
+      "value": "Bewegung im Freien zur Stärkung der Abwehrkräfte"
+     },
+     {
+      "name": "Wettereinfluss auf das Herz- und Kreislaufgeschehen",
+      "value": "Bewegung im Freien zur Stärkung der Abwehrkräfte"
+     },
+     {
+      "name": "Wettereinfluss auf rheumatische Beschwerden",
+      "value": "Bewegung im Freien zur Stärkung der Abwehrkräfte"
+     },
+     {
+      "name": "Wettereinfluss auf Asthma",
+      "value": "Bewegung im Freien zur Stärkung der Abwehrkräfte"
+     }
+    ],
+    "date": "2026-07-15"
+   },
+   "tomorrow_morning": {
+    "recomms": [
+     {
+      "name": "Wettereinfluss auf das allgemeine Befinden",
+      "value": "Bewegung im Freien zur Stärkung der Abwehrkräfte"
+     },
+     {
+      "value": "Bewegung im Freien zur Stärkung der Abwehrkräfte",
+      "name": "Wettereinfluss auf das Herz- und Kreislaufgeschehen"
+     },
+     {
+      "name": "Wettereinfluss auf rheumatische Beschwerden",
+      "value": "Bewegung im Freien zur Stärkung der Abwehrkräfte"
+     },
+     {
+      "value": "Bewegung im Freien zur Stärkung der Abwehrkräfte",
+      "name": "Wettereinfluss auf Asthma"
+     }
+    ],
+    "date": "2026-07-14",
+    "effect": [
+     {
+      "subeffect": [
+       {
+        "name": "psychisch-geistige Leistungsfähigkeit",
+        "value": "kein Einfluss"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Schmerzempfindlichkeit"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Kopfschmerz- bzw. Migräneanfälligkeit"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Schlafqualität"
+       },
+       {
+        "name": "Konzentrations- und Leistungsfähigkeit",
+        "value": "kein Einfluss"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Reizbarkeit und motorische Unruhe"
+       },
+       {
+        "name": "Bereitschaft zu Depressionen",
+        "value": "kein Einfluss"
+       }
+      ],
+      "name": "Wettereinfluss auf das allgemeine Befinden",
+      "value": "kein Einfluss"
+     },
+     {
+      "subeffect": [
+       {
+        "name": "Anfälligkeit für Kreislaufbeschwerden (Mattigkeit, Schwindel)",
+        "value": "kein Einfluss"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Kopfschmerz-Anfälligkeit"
+       }
+      ],
+      "value": "kein Einfluss",
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypotone Form)"
+     },
+     {
+      "subeffect": [
+       {
+        "name": "Anfälligkeit für Herz-Kreislaufbeschwerden",
+        "value": "kein Einfluss"
+       },
+       {
+        "value": "kein Einfluss",
+        "name": "Angina-pectoris-Anfälligkeit"
+       }
+      ],
+      "value": "kein Einfluss",
+      "name": "Wettereinfluss auf Herz- und Kreislaufgeschehen (hypertone Form)"
+     },
+     {
+      "name": "Wettereinfluss auf entzündliche rheumatische Beschwerden",
+      "value": "kein Einfluss"
+     },
+     {
+      "name": "Wettereinfluss auf degenerative rheumatische Beschwerden",
+      "value": "kein Einfluss"
+     },
+     {
+      "value": "kein Einfluss",
+      "name": "Wettereinfluss auf Asthma"
+     },
+     {
+      "name": "Thermische Belastung",
+      "value": "keine"
+     }
+    ],
+    "value": "5-0-00",
+    "name": "1. Tageshälfte"
+   }
+  }
+ ]
+}
