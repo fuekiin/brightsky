@@ -1,0 +1,120 @@
+{
+ "next_update": "2026-07-14 11:00 Uhr",
+ "sender": "Deutscher Wetterdienst - Medizin-Meteorologie",
+ "legend": {
+  "id5": "2",
+  "id4_desc": "geringe bis mittlere Belastung",
+  "id7": "3",
+  "id1": "0",
+  "id3_desc": "geringe Belastung",
+  "id7_desc": "hohe Belastung",
+  "id1_desc": "keine Belastung",
+  "id6_desc": "mittlere bis hohe Belastung",
+  "id5_desc": "mittlere Belastung",
+  "id2_desc": "keine bis geringe Belastung",
+  "id6": "2-3",
+  "id3": "1",
+  "id2": "0-1",
+  "id4": "1-2"
+ },
+ "last_update": "2026-07-13 11:00 Uhr",
+ "content": [
+  {
+   "region_name": "Schleswig-Holstein und Hamburg",
+   "region_id": 10,
+   "Pollen": {
+    "Roggen": {
+     "dayafter_to": "0",
+     "today": "0",
+     "tomorrow": "0"
+    },
+    "Ambrosia": {
+     "dayafter_to": "0",
+     "tomorrow": "0",
+     "today": "0"
+    },
+    "Erle": {
+     "today": "0",
+     "tomorrow": "0",
+     "dayafter_to": "0"
+    },
+    "Beifuss": {
+     "dayafter_to": "0",
+     "today": "0",
+     "tomorrow": "0"
+    },
+    "Esche": {
+     "dayafter_to": "0",
+     "tomorrow": "0",
+     "today": "0"
+    },
+    "Birke": {
+     "today": "0",
+     "tomorrow": "0",
+     "dayafter_to": "0"
+    },
+    "Hasel": {
+     "dayafter_to": "0",
+     "tomorrow": "0",
+     "today": "0"
+    },
+    "Graeser": {
+     "tomorrow": "1-2",
+     "today": "1-2",
+     "dayafter_to": "1-2"
+    }
+   },
+   "partregion_id": 11,
+   "partregion_name": "Inseln und Marschen"
+  },
+  {
+   "region_id": 50,
+   "region_name": "Brandenburg und Berlin",
+   "Pollen": {
+    "Erle": {
+     "today": "0",
+     "tomorrow": "0",
+     "dayafter_to": "0"
+    },
+    "Esche": {
+     "today": "0",
+     "tomorrow": "0",
+     "dayafter_to": "0"
+    },
+    "Beifuss": {
+     "tomorrow": "0-1",
+     "today": "0-1",
+     "dayafter_to": "0-1"
+    },
+    "Graeser": {
+     "tomorrow": "1-2",
+     "today": "1-2",
+     "dayafter_to": "1-2"
+    },
+    "Hasel": {
+     "dayafter_to": "0",
+     "today": "0",
+     "tomorrow": "0"
+    },
+    "Birke": {
+     "dayafter_to": "0",
+     "tomorrow": "0",
+     "today": "0"
+    },
+    "Roggen": {
+     "today": "0",
+     "tomorrow": "0",
+     "dayafter_to": "0"
+    },
+    "Ambrosia": {
+     "dayafter_to": "-1",
+     "today": "0",
+     "tomorrow": "0"
+    }
+   },
+   "partregion_name": "",
+   "partregion_id": -1
+  }
+ ],
+ "name": "Pollenflug-Gefahrenindex für Deutschland ausgegeben vom Deutschen Wetterdienst"
+}

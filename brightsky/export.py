@@ -404,3 +404,54 @@ class AlertExporter(DBExporter):
                 rows,
                 page_size=1000,
             )
+
+
+class PollenExporter(DBExporter):
+
+    UPDATE_POLLEN_STMT = sql.SQL("""
+        INSERT INTO pollen ({fields})
+        VALUES %s
+        ON CONFLICT
+            ON CONSTRAINT pollen_key DO UPDATE SET
+                {conflict_updates};
+    """)
+    ELEMENT_FIELDS = [
+        'region_id',
+        'partregion_id',
+        'region_name',
+        'partregion_name',
+        'species',
+        'date',
+        'index',
+        'severity',
+        'last_update',
+        'next_update',
+        'sender',
+    ]
+
+    def export(self, records, fingerprint=None):
+        with get_connection() as conn:
+            for batch in batched(records, self.BATCH_SIZE):
+                self.update_pollen(conn, batch)
+            if fingerprint:
+                self.update_parsed_files(conn, fingerprint)
+            conn.commit()
+
+    def update_pollen(self, conn, records):
+        for fields, records in self.make_batches(records).items():
+            logger.info(
+                "Exporting %d pollen records with fields %s",
+                len(records), tuple(fields))
+            stmt = self.UPDATE_POLLEN_STMT.format(
+                fields=sql.SQL(', ').join(sql.Identifier(f) for f in fields),
+                conflict_updates=sql.SQL(', ').join(
+                    sql.SQL('{field} = EXCLUDED.{field}').format(
+                        field=sql.Identifier(f))
+                    for f in fields),
+            )
+            template = sql.SQL('({values})').format(
+                values=sql.SQL(', ').join(
+                    sql.Placeholder(f) for f in fields),
+            )
+            with conn.cursor() as cur:
+                execute_values(cur, stmt, records, template, page_size=1000)

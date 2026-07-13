@@ -11,6 +11,7 @@ from brightsky.parsers import (
     DewPointObservationsParser,
     get_parser,
     MOSMIXParser,
+    PollenParser,
     PrecipitationObservationsParser,
     PressureObservationsParser,
     RadarParser,
@@ -130,6 +131,7 @@ def test_get_parser():
         'K611_-BEOB.csv': CurrentObservationsParser,
         synop_with_timestamp: SYNOPParser,
         synop_latest: None,
+        's31fg.json': PollenParser,
     }
     for filename, expected_parser in expected.items():
         assert get_parser(filename) is expected_parser

@@ -11,6 +11,7 @@ from brightsky.db import fetch
 from brightsky.export import (
     AlertExporter,
     DBExporter,
+    PollenExporter,
     RadarExporter,
     SYNOPExporter,
 )
@@ -224,10 +225,17 @@ class CAPParser(BrightSkyMixin, dwdparse.parsers.CAPParser):
     exporter = AlertExporter
 
 
+class PollenParser(BrightSkyMixin, dwdparse.parsers.PollenParser):
+
+    PRIORITY = 30
+    exporter = PollenExporter
+
+
 def get_parser(filename):
     parsers = {
         r'MOSMIX_(S|L)_LATEST(_240)?\.kmz$': MOSMIXParser,
         r'Z_CAP_C_EDZW_LATEST_.*_COMMUNEUNION_MUL\.zip': CAPParser,
+        r's31fg\.json$': PollenParser,
         r'Z__C_EDZW_\d+_.*\.json\.bz2$': SYNOPParser,
         r'\w{5}-BEOB\.csv$': CurrentObservationsParser,
         'composite_rv_': RadarParser,

@@ -82,6 +82,7 @@ def db(_database):
         with conn.cursor() as cur:
             cur.execute("""
                 DELETE FROM parsed_files;
+                DELETE FROM pollen;
                 DELETE FROM synop;
                 DELETE FROM weather;
                 DELETE FROM sources;

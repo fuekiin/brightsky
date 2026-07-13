@@ -23,6 +23,7 @@ class DWDPoller:
         'https://opendata.dwd.de/weather/weather_reports/synoptic/germany/'
         'json/',
         'https://opendata.dwd.de/weather/weather_reports/poi/',
+        'https://opendata.dwd.de/climate_environment/health/alerts/',
     ] + [
         'https://opendata.dwd.de/climate_environment/CDC/observations_germany/'
         f'climate/hourly/{subfolder}/'

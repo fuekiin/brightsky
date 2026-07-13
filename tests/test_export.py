@@ -169,3 +169,29 @@ def test_synop_exporter(db):
     #      finished yet. Can we somehow wait until the lock is released?
     current_weather_records = _query_records(db, table='current_weather')
     assert len(current_weather_records) == 1
+
+
+def test_pollen_exporter(db, data_dir):
+    from brightsky.parsers import PollenParser
+    p = PollenParser()
+    records = list(p.parse(data_dir / 's31fg.json'))
+    p.exporter().export(iter(records), fingerprint=FINGERPRINT)
+    rows = db.table('pollen')
+    assert len(rows) == len(records) == 47
+    key_fields = ['region_id', 'partregion_id', 'species', 'date']
+    parsed_files = db.fetch("SELECT * FROM parsed_files")
+    assert len(parsed_files) == 1
+    # Re-export upserts instead of duplicating
+    records[0]['index'] = '3'
+    records[0]['severity'] = 3.
+    p.exporter().export(iter(records))
+    rows = db.table('pollen')
+    assert len(rows) == 47
+    updated = [
+        row for row in rows
+        if all(row[k] == records[0][k] for k in key_fields)]
+    assert len(updated) == 1
+    assert updated[0]['index'] == '3'
+    assert updated[0]['severity'] == 3.
+    assert updated[0]['sender'] == (
+        'Deutscher Wetterdienst - Medizin-Meteorologie')
