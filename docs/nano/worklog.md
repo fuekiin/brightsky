@@ -121,8 +121,8 @@ ingestion, `fed84e8` endpoints, + this docs commit):
   WeatherCore derivation layer (`HealthSignals.derive`, severity model), `HealthProviderActor` +
   `HealthProfileStore` (App-Group cached, stale-serving on error), a signal-list `HealthCard`,
   a reworked `HealthDetailSheet` (tinted hero, pollen matrix, UV/Wärmebelastung/Biowetter
-  sections, attribution footer), and a 4-step `HealthSetupWizard` (Pollenarten, Hauttyp,
-  Biowetter-Empfindlichkeit, Benachrichtigungspräferenz).
+  sections, attribution footer), and a 4-step `HealthSetupWizard` (Pollenarten mit
+  Schwellwerten, Hauttyp/UV, Biowetter-Beschwerdebilder, Wärmeempfindlichkeit).
 - Final wiring task: the Weather-home card call site still used a leftover `#if DEBUG` block
   from before the feature existed; replaced with the runtime `HealthFeature.isEnabled` check
   used everywhere else in the feature, and un-gated the `healthVM`/`healthTaskKey` declarations
