@@ -111,3 +111,35 @@ ingestion, `fed84e8` endpoints, + this docs commit):
   city Stuttgart — all consistent).
 - Follow-ups for the real feature: route through `BrightSkyGateway` once prod serves the
   endpoints, drop the `#if DEBUG` gate, App-Group caching, proper design pass.
+
+## 2026-07-14 — Gesundheit feature complete: data layer, wizard, gate
+
+**Done** (WeatherGermany `debug/pollen-local`, 13-task plan, final commit `2d052be`):
+
+- Full feature built per spec (`docs/superpowers/specs/2026-07-14-health-feature-design.md`)
+  and plan (`docs/superpowers/plans/2026-07-14-health-feature.md`) in the WeatherGermany repo:
+  WeatherCore derivation layer (`HealthSignals.derive`, severity model), `HealthProviderActor` +
+  `HealthProfileStore` (App-Group cached, stale-serving on error), a signal-list `HealthCard`,
+  a reworked `HealthDetailSheet` (tinted hero, pollen matrix, UV/Wärmebelastung/Biowetter
+  sections, attribution footer), and a 4-step `HealthSetupWizard` (Pollenarten, Hauttyp,
+  Biowetter-Empfindlichkeit, Benachrichtigungspräferenz).
+- Final wiring task: the Weather-home card call site still used a leftover `#if DEBUG` block
+  from before the feature existed; replaced with the runtime `HealthFeature.isEnabled` check
+  used everywhere else in the feature, and un-gated the `healthVM`/`healthTaskKey` declarations
+  so the whole path compiles in Release too (only the flag hides it, not the compiler).
+  `HealthFeature.isEnabled` is itself still `#if DEBUG` internally — that's the single
+  intended seam, to be swapped for `entitlement.isPro` when the paywall ships.
+- Verified: WeatherCore `swift test` full suite green (272/272), Debug and Release builds of
+  the `WeatherGermany` scheme both succeed, and a Debug build launched clean in the iPhone 17
+  Pro Simulator against this fork running locally on 127.0.0.1:5599 — the card rendered real
+  signal rows (Gräser gering bis mittel, Wärmebelastung mittel, UV-Index 5 mittel) with no
+  crash. Full interactive wizard/gear/stale-cache click-through from the plan's Step 3 was not
+  re-run this session (no UI automation harness available); static launch verification plus
+  the individual per-task manual passes already recorded in earlier entries above are the
+  closure evidence for this pass.
+- **Still pending before this ships to real users:** backend deploy of the fork to
+  `api.nano-wetter.de` (plan recorded in `deployment.md`, approved but not executed — the
+  `HealthViewModel.makeProvider()` DEBUG branch still points at the local fork by default) and
+  the StoreKit paywall (Abo + Lifetime), which is what will eventually replace
+  `HealthFeature.isEnabled`'s `#if DEBUG` body. Also deferred: widgets/watchOS/notifications
+  consuming the same provider/store, and Aptabase funnel events.
