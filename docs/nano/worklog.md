@@ -96,7 +96,10 @@ ingestion, `fed84e8` endpoints, + this docs commit):
 **Open questions / next steps:** (in addition to the 2026-07-13 list)
 
 - [x] Bump + push both forks (done 2026-07-14; tarball pin `eedb374…` verified resolvable).
-- [ ] CI workflows (test + image build) per deployment.md.
+- [x] First image on GHCR (done 2026-07-14, manual `docker buildx --platform linux/amd64`
+      from a Mac): `ghcr.io/fuekiin/brightsky:nano-v1` = `:sha-ba10fe5`, verified linux/amd64.
+      Package is private until visibility is flipped (see deployment.md step 3).
+- [ ] CI workflows (test + image build) per deployment.md — should replace manual pushes.
 
 ## 2026-07-14 — nano app: Gesundheit card for all four products
 
