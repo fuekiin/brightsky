@@ -10,6 +10,9 @@ on:
   push:
     branches: [ nano-health ]
     tags: [ 'nano-v*' ]
+    # Documentation-only pushes need neither tests nor an image
+    paths-ignore:
+      - 'docs/**'
   workflow_dispatch:
 
 jobs:

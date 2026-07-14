@@ -99,7 +99,13 @@ ingestion, `fed84e8` endpoints, + this docs commit):
 - [x] First image on GHCR (done 2026-07-14, manual `docker buildx --platform linux/amd64`
       from a Mac): `ghcr.io/fuekiin/brightsky:nano-v1` = `:sha-ba10fe5`, verified linux/amd64.
       Package is private until visibility is flipped (see deployment.md step 3).
-- [ ] CI workflows (test + image build) per deployment.md — should replace manual pushes.
+- [x] CI workflows (done 2026-07-14): additive `.github/workflows/nano.yml` in both forks.
+      dwdparse: lint+tests (py 3.9/3.14). brightsky: tests against Postgres 17 + linux/amd64
+      image to `ghcr.io/fuekiin/brightsky` tagged `sha-<sha>` / `nano-health` / `nano-v*`,
+      via GITHUB_TOKEN (repo granted Write on the package after the manual first push had
+      claimed it — "Manage Actions access"). requirements-dev.txt now carries the same
+      dwdparse tarball pin as requirements.txt (CI installs only the dev file). First green
+      image: `sha-a9000cd`. Doc-only pushes skip CI (`paths-ignore: docs/**`).
 
 ## 2026-07-14 — nano app: Gesundheit card for all four products
 
