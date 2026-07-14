@@ -40,7 +40,9 @@ cssselect==1.4.0
     # via
     #   -r requirements.txt
     #   parsel
-dwdparse==0.9.22
+# nano fork: same tarball pin as requirements.txt — keep the two in sync
+# (see docs/nano/fork-management.md)
+dwdparse @ https://github.com/fuekiin/dwdparse/archive/eedb374d8a51107b10f98d08bcfb78b6900fd8a1.tar.gz
     # via -r requirements.txt
 falcon==4.2.0
     # via -r requirements.txt

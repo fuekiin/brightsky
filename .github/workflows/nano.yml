@@ -1,0 +1,80 @@
+# nano fork CI: tests + GHCR image for the nano-health branch (upstream's
+# main.yml only covers master and v* tags; it stays untouched for clean
+# rebases). Every green push produces a deployable linux/amd64 image on
+# ghcr.io/fuekiin/brightsky, tagged with the commit SHA plus the branch name
+# (and the tag name for nano-v* tags). Deploys always pin the SHA tag — see
+# docs/nano/deployment.md.
+name: nano CI
+
+on:
+  push:
+    branches: [ nano-health ]
+    tags: [ 'nano-v*' ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Run Test Suite
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: pgpass
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Run tests
+        env:
+          BRIGHTSKY_DATABASE_URL: postgres://postgres:pgpass@localhost/brightsky_test
+        run: |
+          python -m pip install -r requirements-dev.txt
+          ruff check .
+          pytest
+
+  push-to-ghcr:
+    name: Push Docker Image to GHCR
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha
+            type=ref,event=branch
+            type=ref,event=tag
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
