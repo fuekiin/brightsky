@@ -190,7 +190,10 @@ plan: `plans/2026-09-17-radar3d-phase1.md`):
 - Measured on the dev Mac (M-series, 8 cores), Germany 1 km × 500 m grid (698 × 912 × 24):
   geometry precompute 0.1–0.6 s per site, 20–29 MiB per site (~420 MiB for 17, held in RAM);
   a full 17-site cycle (170 sweeps) grids in **~7 s** (10.7 s including the one-time precompute);
-  a national frame is 15.3 MB on disk (~550 MB for the 3 h retention); crops over HTTP:
+  a national frame is 15.3 MB on disk (~550 MB for the 3 h retention); **peak RSS 1.29 GB**
+  during the offline run of 20 cycles (`/usr/bin/time -l`: geometry ~420 MiB + all 170 decoded
+  sweeps held at once + numpy transients — streaming sites one at a time would roughly halve
+  it); crops over HTTP:
   100 km box at 1 km = 11 KB in ~0.1 s, 250 km box = 248 KB in ~0.09 s, 2 km = a third of that.
 - Cross-check against the app session's 2 km national fixture (`radar3d-de-2026-09-16.json`,
   25 cycles 11:00–13:00): echo-presence Jaccard 0.82–0.83, column-composite correlation

@@ -74,6 +74,6 @@ services:
 ```
 
 Then `docker compose ... pull && up -d radar3d web`. Expectations on the 4-core / 7.7 GB box:
-~0.5 GB RSS for the radar3d container (per-site geometry in RAM), ~7–15 s CPU per 5-minute
-cycle, ~17 MB/min of DWD listing traffic, ~600 MB disk. Migration `0021_radar3d.sql` is
+~1.3 GB peak RSS for the radar3d container (measured on the dev Mac; per-site geometry ~420 MiB
+in RAM plus per-cycle transients), ~5–13 s CPU per 5-minute cycle, ~17 MB/min of DWD listing traffic, ~600 MB disk. Migration `0021_radar3d.sql` is
 additive. Rollback: `docker compose stop radar3d`, the `/radar3d` routes then answer 404.

@@ -215,7 +215,8 @@ Voxels are level-major `[level][row][col]`, one byte for rain.
 
 ### Numbers (dev Mac, 2026-09-17)
 
-Geometry 20–29 MiB and 0.1–0.6 s per site (~420 MiB for 17, in RAM); a full cycle ~7 s;
+Geometry 20–29 MiB and 0.1–0.6 s per site (~420 MiB for 17, in RAM); a full cycle 3–13 s
+(median ~5.5 s over 20 cycles); peak RSS 1.29 GB;
 100 km crop 11 KB / 0.1 s, 250 km crop 248 KB / 0.09 s. Listing traffic ~1 MB per site per poll.
 
 ### Tests
