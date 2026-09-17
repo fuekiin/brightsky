@@ -342,3 +342,16 @@ client-side interpolation. `write_forecast()` runs after every rain cycle (the w
 with the newest observed frame) and after a run load; frames stay keyed by run. `lead_min`
 replaces `lead_h`; `RADAR3D_FORECAST_MINUTES` = 60, `RADAR3D_ICON_STEPS` back to 6 (~450 MB per
 run with `qr`). Not deployed; the owner stopped the first deploy attempt to discuss this first.
+
+**Forecast rain calibration (same night):** the app session measured the first forecast frame
+against the newest observed frame (Bremen box, 2 km) and found the forecast rain "with the shape
+of the cloud deck" — 60 % of columns ≥8 dBZ vs 32 % observed. Cause: one rain Z–M relation
+applied to snow and graupel too. Fix (`494caec`): per-hydrometeor relations summed in linear Z
+(rain 2.4e4·M^1.82, dry snow 1.1e3·M^1.6, graupel 5.0e3·M^1.7), floor 0.02 g/m³ total.
+Acceptance on the local serve, run 18 UTC (lead ~2 h), Bremen 150 km: columns ≥8 dBZ
++3.0 pp, ≥20 −3.6 pp, ≥35 −0.5 pp vs observed (within the agreed ±5 pp); an offline sweep
+showed lowering the snow relation further only trades the weak band for the ≥20 band, so no
+per-run bias correction. Inherent residuals: no convective cores in the model (max ~40–45 dBZ
+vs 50–60 observed) and a strong dependence on run age (a 4.5 h-old run gave +17 pp in the weak
+band). Boxes that extend beyond radar coverage compare unfairly (the observed frame is empty
+there by construction).
