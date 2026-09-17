@@ -582,8 +582,8 @@ class Radar3DIngest:
             for step in range(1, self.settings['icon_steps'] + 1)
             for var, levels in (('qc', q_levels), ('qi', q_levels),
                                 ('qs', q_levels), ('qg', q_levels),
-                                ('clc', q_levels), ('u', w_levels),
-                                ('v', w_levels))
+                                ('qr', q_levels), ('clc', q_levels),
+                                ('u', w_levels), ('v', w_levels))
             for level in levels
         ]
         missing = [

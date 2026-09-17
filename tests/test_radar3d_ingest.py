@@ -236,12 +236,14 @@ class FakeIcon:
 
     def __init__(self):
         self.fetched = 0
+        self.vars = set()
 
     def url(self, run, step, level, var):
         return f'fake://icon/{run:%H}/{var}/{step}/{level}'
 
     def fetch(self, url, dest):
         self.fetched += 1
+        self.vars.add(url.split('/')[4])
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(b'')
         return True
@@ -311,6 +313,8 @@ def test_icon_run_writes_forecast_frames_and_drops_old_runs(
     ing.poll_icon()
     runs = sorted(ing.icon_runs)
     assert len(runs) == 2
+    assert ing.icon_source.vars == {'qc', 'qi', 'qs', 'qg', 'qr', 'clc',
+                                    'u', 'v'}
     newest = runs[-1]
     key = f'forecast_rain/{newest:%Y%m%dT%HZ}'
     stamps = [ts for ts, _ in indexed[key]]
