@@ -90,13 +90,24 @@ def test_column_flow_weights_by_water():
     assert fu[0, 0] == pytest.approx(20.0, abs=1e-3)
 
 
-def test_pwc_to_dbz_bytes_follows_z_m():
-    from brightsky.radar3d.icon import pwc_to_dbz_bytes
-    m = np.array([[[0.0, 0.005, 0.1, 1.0, 3.0, 1000.0]]], np.float32)
-    v = pwc_to_dbz_bytes(m)[0, 0]
+def test_hydrometeors_to_dbz_bytes():
+    from brightsky.radar3d.icon import hydrometeors_to_dbz_bytes
+    zero = np.zeros((1, 1, 6), np.float32)
+    qr = np.array([[[0.0, 0.005, 0.1, 1.0, 3.0, 1000.0]]], np.float32)
+    v = hydrometeors_to_dbz_bytes(qr, zero, zero)[0, 0]
     dbz = v.astype(float) * 0.5 - 32.0
     assert v[0] == 0 and v[1] == 0                      # below the floor
     assert dbz[2] == pytest.approx(25.6, abs=0.5)
     assert dbz[3] == pytest.approx(43.8, abs=0.5)
     assert dbz[4] == pytest.approx(52.5, abs=0.5)
     assert v[5] == 255                                  # clipped
+    # the same mass as snow reflects ~13 dB less, graupel in between
+    one = np.array([[[1.0]]], np.float32)
+    z0 = np.zeros((1, 1, 1), np.float32)
+    snow = hydrometeors_to_dbz_bytes(z0, one, z0)[0, 0, 0] * 0.5 - 32
+    graupel = hydrometeors_to_dbz_bytes(z0, z0, one)[0, 0, 0] * 0.5 - 32
+    assert snow == pytest.approx(30.4, abs=0.5)
+    assert 30.4 < graupel < 43.8
+    # linear sum: rain + snow together is brighter than either alone
+    both = hydrometeors_to_dbz_bytes(one, one, z0)[0, 0, 0] * 0.5 - 32
+    assert both > 43.8

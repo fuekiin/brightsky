@@ -311,13 +311,14 @@ def test_forecast_window_after_the_newest_observed_frame(
     L, H, W = ing.cloud_grid.shape
 
     def fake_step(run_dir, run_, step, sampler, full_h, q_levels, w_levels):
-        pwc = np.zeros((L, H, W), np.float32)
-        pwc[4, 10, 10] = 1.0
+        qr = np.zeros((L, H, W), np.float32)
+        qr[4, 10, 10] = 1.0
+        zero = np.zeros((L, H, W), np.float16)
         return StepFields(
             run_ + datetime.timedelta(hours=step),
-            np.zeros((L, H, W), np.float16), np.zeros((L, H, W), np.float16),
+            zero, zero,
             np.zeros((H, W), np.float32), np.zeros((H, W), np.float32),
-            pwc=pwc.astype(np.float16))
+            qr=qr.astype(np.float16), qs=zero, qg=zero)
     monkeypatch.setattr(ingest_module, 'load_step', fake_step)
     ing.full_h = np.linspace(20000, 0, 65)[:, None, None] \
         + np.zeros((65, H, W))

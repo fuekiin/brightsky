@@ -20,10 +20,12 @@ import numpy as np
 HALF_LEVELS = 66
 Q_VARS = ('qc', 'qi', 'qs', 'qg')        # condensed water: the cloud body
 P_VARS = ('qr', 'qs', 'qg')              # precipitation water: forecast rain
-# Z–M relation for precipitation water content M (g/m³) → reflectivity:
-# Z = 2.4e4 · M^1.82 (mm⁶/m³), i.e. 0.1 g/m³ ≈ 20 dBZ, 1 ≈ 44, 3 ≈ 53.
-ZM_A, ZM_B = 2.4e4, 1.82
-PWC_FLOOR = 0.01                         # g/m³ below which there is no echo
+# Z–M relations per hydrometeor, Z (mm⁶/m³) = a · M^b with M in g/m³, summed
+# in linear Z. Rain: 2.4e4·M^1.82 (0.1 g/m³ ≈ 26 dBZ, 1 ≈ 44). Dry snow and
+# graupel reflect far less at equal mass (ice dielectric factor, density):
+# snow ≈ 13 dB below rain at 1 g/m³, graupel in between.
+ZM = {'qr': (2.4e4, 1.82), 'qs': (1.1e3, 1.6), 'qg': (5.0e3, 1.7)}
+PWC_FLOOR = 0.02                         # g/m³ total below which no echo
 
 
 def grib_name(run, step, level, var):
@@ -168,17 +170,26 @@ class StepFields:
     cov: np.ndarray        # [L, H, W] float16
     fu: np.ndarray         # [H, W] float32
     fv: np.ndarray         # [H, W] float32
-    pwc: np.ndarray = None  # [L, H, W] float16, None for old-style steps
+    qr: np.ndarray = None  # [L, H, W] float16 g/m³ rain water
+    qs: np.ndarray = None  # snow
+    qg: np.ndarray = None  # graupel
 
 
-def pwc_to_dbz_bytes(pwc):
-    """Precipitation water (g/m³) → the rain frames' byte encoding
-    (dBZ = v × 0.5 − 32, 0 = no echo) via the Z–M relation."""
-    m = np.asarray(pwc, dtype=np.float32)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        dbz = 10.0 * np.log10(ZM_A * np.power(np.maximum(m, 1e-6), ZM_B))
+def hydrometeors_to_dbz_bytes(qr, qs, qg):
+    """Rain, snow and graupel water contents (g/m³) → the rain frames'
+    byte encoding (dBZ = v × 0.5 − 32, 0 = no echo): per-hydrometeor Z–M
+    relations summed in linear Z."""
+    total = np.zeros(np.shape(qr), np.float32)
+    z = np.zeros(np.shape(qr), np.float32)
+    for name, m in (('qr', qr), ('qs', qs), ('qg', qg)):
+        m = np.maximum(np.asarray(m, dtype=np.float32), 0.0)
+        a, b = ZM[name]
+        z += a * np.power(m, b)
+        total += m
+    with np.errstate(divide='ignore'):
+        dbz = 10.0 * np.log10(np.maximum(z, 1e-6))
     out = np.clip(np.round((dbz + 32.0) * 2.0), 1, 255).astype(np.uint8)
-    out[m < PWC_FLOOR] = 0
+    out[total < PWC_FLOOR] = 0
     return out
 
 
@@ -213,8 +224,11 @@ def load_step(run_dir, run, step, sampler, full_h, q_levels, w_levels,
     rho = 1.225 * np.exp(-np.clip(h_q, 0, None) / 8500.0)
     q = sum(fields[var] for var in Q_VARS)
     lwc = to_slabs(q * rho * 1000.0, h_q, slab_h)
-    pw = sum(fields[var] for var in P_VARS)
-    pwc = to_slabs(pw * rho * 1000.0, h_q, slab_h)
+    hydro = {
+        var: to_slabs(fields[var] * rho * 1000.0, h_q, slab_h).astype(
+            np.float16)
+        for var in P_VARS
+    }
     del fields
     cov = to_slabs(stack('clc', q_levels), h_q, slab_h)
     u = to_slabs(stack('u', w_levels), h_w, slab_h)
@@ -223,7 +237,7 @@ def load_step(run_dir, run, step, sampler, full_h, q_levels, w_levels,
     return StepFields(
         valid_time=run + datetime.timedelta(hours=step),
         lwc=lwc.astype(np.float16), cov=cov.astype(np.float16),
-        fu=fu, fv=fv, pwc=pwc.astype(np.float16),
+        fu=fu, fv=fv, **hydro,
     )
 
 

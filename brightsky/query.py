@@ -1046,7 +1046,8 @@ async def radar3d(
 
 RADAR3D_FORECAST_ENCODING = {
     'scale': 0.5, 'offset': -32.0, 'nodata': 0, 'unit': 'dBZ',
-    'derived': 'Z-M from ICON-D2 qr+qs+qg (Z = 2.4e4 M^1.82)'}
+    'derived': ('Z-M from ICON-D2 hydrometeors, summed in linear Z: '
+                'rain 2.4e4 M^1.82, snow 1.1e3 M^1.6, graupel 5.0e3 M^1.7')}
 
 
 async def _radar3d_forecast(conn, grid, crop, bounds, bbox, newest_observed):

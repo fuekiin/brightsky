@@ -13,7 +13,7 @@ import struct
 
 import numpy as np
 
-from brightsky.radar3d.icon import cell_metres, pwc_to_dbz_bytes
+from brightsky.radar3d.icon import cell_metres, hydrometeors_to_dbz_bytes
 
 
 FRAME_SECONDS = 300.0
@@ -125,8 +125,9 @@ class CloudModel:
         """Forecast frame at any stamp, synthesised like the observed cloud
         frames → (rain uint8 [L, H, W] via Z–M, rg uint8 [L, H, W, 2],
         flow [H, W, 2])."""
-        fields, flow = self._blend(ts, ('lwc', 'cov', 'pwc'))
-        rain = pwc_to_dbz_bytes(fields['pwc'])
+        fields, flow = self._blend(ts, ('lwc', 'cov', 'qr', 'qs', 'qg'))
+        rain = hydrometeors_to_dbz_bytes(
+            fields['qr'], fields['qs'], fields['qg'])
         return rain, quantise(fields['lwc'], fields['cov']), flow
 
 

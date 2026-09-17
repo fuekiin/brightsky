@@ -88,11 +88,14 @@ def test_flow_block_layout():
 def test_forecast_frame_at_blends_like_clouds(model):
     L, H, W = model.grid.shape
     with pytest.raises(LookupError):
-        model.forecast_frame_at(T0)              # fixture steps lack pwc
+        model.forecast_frame_at(T0)        # fixture steps lack hydrometeors
     for t, col in ((T0, 4), (T1, 16)):
-        pwc = np.zeros((L, H, W), np.float32)
-        pwc[3, 6, col] = 1.0
-        model.steps[t].pwc = pwc.astype(np.float16)
+        qr = np.zeros((L, H, W), np.float32)
+        qr[3, 6, col] = 1.0
+        step = model.steps[t]
+        step.qr = qr.astype(np.float16)
+        step.qs = np.zeros((L, H, W), np.float16)
+        step.qg = np.zeros((L, H, W), np.float16)
     half = T0 + datetime.timedelta(minutes=30)
     rain, rg, flow = model.forecast_frame_at(half)
     assert rain.shape == (L, H, W) and rg.shape == (L, H, W, 2)
