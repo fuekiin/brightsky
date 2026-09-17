@@ -1,7 +1,8 @@
 # Deploying the fork to api.nano-wetter.de
 
-Status 2026-07-14: **plan approved, not yet executed.** The production server still runs the
-upstream image. Nothing below has been applied.
+Status 2026-07-14: **executed.** Production now runs `ghcr.io/fuekiin/brightsky:sha-a9000cd`.
+`/pollen` is live. See `bright_sky_config` `docs/deploy-2026-07-14-pollen.md` for the
+verified record and `docs/pre-deploy-2026-07-14-pollen.md` for the rollback snapshot.
 
 ## Current production setup (verified via ~/Development/bright_sky_config)
 

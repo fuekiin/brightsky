@@ -152,3 +152,24 @@ ingestion, `fed84e8` endpoints, + this docs commit):
   the StoreKit paywall (Abo + Lifetime), which is what will eventually replace
   `HealthFeature.isEnabled`'s `#if DEBUG` body. Also deferred: widgets/watchOS/notifications
   consuming the same provider/store, and Aptabase funnel events.
+
+## 2026-07-14 — Backend deploy: /pollen live on api.nano-wetter.de
+
+**Done** (`bright_sky_config` `671cae1` + `7bc38c3`; server state only, no fork commits):
+
+- Executed `deployment.md`'s approved plan: GHCR package `ghcr.io/fuekiin/brightsky` stayed
+  private; authenticated via `docker login ghcr.io` on the server with a read-only PAT
+  (scope `read:packages`) instead of flipping the package public.
+- `brightsky.yml` image line repointed from upstream `jdemaeyer/brightsky:${TAG:-latest}` to
+  `ghcr.io/fuekiin/brightsky:${BRIGHTSKY_IMAGE_TAG}` (pinned, no floating default);
+  `BRIGHTSKY_IMAGE_TAG=sha-a9000cd` set in `.env`.
+- `docker compose pull && up -d worker web` — only those two containers recreated;
+  `postgres`/`redis`/`traefik`/`prometheus`/`grafana` and all bind-mounted data untouched.
+- Verified: `pollen` table exists post-migration, existing endpoints kept serving `200 OK`
+  through the restart, `GET /pollen?lat=52.52&lon=13.41` → live DWD data for
+  Berlin/Brandenburg. Full record + rollback steps in `bright_sky_config`.
+- **Still local-fork-only:** the app (`HealthViewModel.makeProvider()`) still points at the
+  local dev fork, not `BrightSkyGateway` → prod. Routing the app at prod `/pollen` (and the
+  other three health endpoints, which shipped in the same image/migration set but are
+  unverified against real DWD data beyond pollen) is the next step before this is a real
+  user-facing feature.
