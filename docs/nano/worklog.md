@@ -305,3 +305,29 @@ tag denied) — the owner re-issued the token; check `docker manifest inspect` b
 deploy. Monitoring: `nano-tooling` `brightsky/radar3d` (manifest freshness/coverage, no creds)
 and `brightsky/radar3d-worker` (container log digest); baseline in
 `bright_sky_config/docs/pre-deploy-2026-09-18-radar3d.md`.
+
+## 2026-09-18 — radar3d forecast: hourly ICON-D2 frames past "now" (branch `nano-radar3d-forecast`)
+
+**Done** (asked for by the owner; contract agreed with the app session — hourly frames,
+client-side crossfade along the flow, Z–M-mapped dBZ, separate `forecast` block, +12 h):
+
+- `icon.py`: `load_step` also builds **precipitation water** `qr+qs+qg` (g/m³, `StepFields.pwc`);
+  `pwc_to_dbz_bytes` maps it to the observed rain encoding via Z = 2.4e4·M^1.82
+  (0.1 g/m³ → 25.6 dBZ, 1 → 43.8, 3 → 52.5; below 0.01 g/m³ = no echo). `qr` joins the run
+  download (+57 files/step); `RADAR3D_ICON_STEPS` 6 → 12, `RADAR3D_FORECAST_HOURS` = 12.
+- `clouds.py`: `CloudModel.forecast_at(ts)` at exact model steps → rain bytes, cloud rg, flow.
+- `ingest.py`: after a run loads, `write_forecast(run)` writes hourly `forecast_rain/<run>`,
+  `forecast_clouds/<run>`, `forecast_flow/<run>` (products keyed by run so a served frame is
+  never overwritten; URLs are immutable); `clean_forecasts` keeps the newest two runs.
+- Web: manifest gets `forecast: {run, grid (2 km, bounds = grid_clouds, dBZ encoding with a
+  `derived` note), frames: [{timestamp, lead_h, rain, clouds, cells: null}]}` for the newest
+  run's hours **after the newest observed frame**, and `flows_forecast`; the block is omitted
+  when no run is loaded. `GET /radar3d/forecast/{rain|clouds}/{run}/{ts}?bbox=…` — NANO3D on
+  the 2 km grid (rain 1 channel, clouds 2), both with the flow block (model wind of that hour,
+  cloud-grid cells per 5 min — the client scales by the hourly gap).
+- Tests: Z–M mapping, `forecast_at`, worker forecast writing + run retention, manifest block
+  (present/absent, starts after the newest observed frame), forecast frame routes (114 total).
+
+**Costs:** download per run ~48 MB × 12 steps ≈ 575 MB (every 3 h; was ~270 MB), load ≈ 12
+steps × 20–25 s; storage per run 12 × (3.8 MB rain + 7.6 MB clouds + 1.3 MB flow) ≈ 150 MB, two
+runs kept. Not deployed yet.

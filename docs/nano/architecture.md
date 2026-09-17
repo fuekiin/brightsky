@@ -283,3 +283,25 @@ level selection, column flow), `test_radar3d_clouds.py` (warp, quantisation, a b
 with the wind, flow block layout), `test_radar3d_cells.py` (golden vs the app fixture),
 `test_radar3d_ingest.py` (schedule learning, predicted fetches, overdue → one listing, cells,
 a synthetic ICON run producing cloud frames), `test_web.py::test_radar3d_*`.
+
+## Radar 3D pipeline — forecast (2026-09-18)
+
+The cloud volumes were always a forecast product; this extends the same ICON-D2 run to the
+hours past the observed timeline, hourly, for rain and clouds.
+
+- **Rain**: precipitation water `qr+qs+qg` on the model levels → slabs (like the clouds'
+  condensed water) → dBZ bytes via the Z–M relation Z = 2.4e4·M^1.82 (`icon.pwc_to_dbz_bytes`),
+  so the app's rain shader, legend and intensity words apply unchanged; the manifest's forecast
+  `encoding` carries a `derived` note. Model rain at 2 km is smoother than radar: it shows where
+  and how high precipitation forms, not the cores.
+- **Frames**: at exact model steps only (`CloudModel.forecast_at`); no 5-minute synthesis. The
+  flow block carries the model wind of that hour in cloud-grid cells per 5 minutes; the client
+  advects between hourly frames by scaling with the gap.
+- **Storage**: `forecast_rain/<run>/<ts>.npy` etc., keyed by run (`%Y%m%dT%HZ`) so URLs are
+  immutable; the index rows use the same `forecast_rain/<run>` product name; the newest two
+  runs are kept, older ones dropped when a run's frames have been written.
+- **Manifest**: `query._radar3d_forecast` picks the newest run present in `radar3d_frames`
+  and lists its hours after the newest observed frame; `forecast` is omitted (and
+  `flows_forecast` false) when none is loaded.
+- **Endpoints**: `/radar3d/forecast/rain/{run}/{ts}` (1 channel), `/radar3d/forecast/clouds/{run}/{ts}`
+  (2 channels), both with the flow block; 404 for unknown run/hour, 422 for other products.
