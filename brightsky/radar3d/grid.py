@@ -84,7 +84,8 @@ class Grid:
         return (merc_y(lat) - my0) / (my1 - my0) * self.height
 
     def _col(self, lon):
-        return (lon - self.min_lon) / (self.max_lon - self.min_lon) * self.width
+        span = self.max_lon - self.min_lon
+        return (lon - self.min_lon) / span * self.width
 
     def crop(self, min_lat, max_lat, min_lon, max_lon, align=1):
         """

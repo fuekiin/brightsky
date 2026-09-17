@@ -52,11 +52,8 @@ def test_matches_reference_gridder(isen_grid, isn_cycle, data_dir):
         np.uint8).reshape(24, 300, 300)
     vol = grid_rain(isen_grid, [(SiteGeometry(isen_grid, meta), tilts)])
     assert vol.shape == golden.shape and vol.dtype == np.uint8
-    diff = vol.astype(int) - golden.astype(int)
-    # Float32 elevation angles vs the reference's float64: at most one
-    # count (0.5 dBZ) apart, and only on a vanishing fraction of voxels.
-    assert np.abs(diff).max() <= 1
-    assert (diff != 0).mean() < 0.001
+    # Byte-exact: the port reproduces the reference gridder's arithmetic
+    assert np.array_equal(vol, golden)
     assert (vol > 0).sum() > 50_000
     assert vol.max() / 2.0 - 32.0 == pytest.approx(62.0)
 
