@@ -128,3 +128,7 @@ class Grid:
 # All of Germany at (nominally) 1 km: 10° of longitude at 51° N is ~700 km,
 # 8.2° of latitude ~912 km. Both even so the 2 km max-pool aligns.
 GERMANY_1KM = Grid(47.0, 55.2, 5.5, 15.5, width=698, height=912)
+# The cloud grid: the rain grid halved (ICON-D2 is 2.2 km; 1 km would be
+# oversampling). Same bounds, so a crop aligned to 2 rain cells is one crop
+# on both grids.
+GERMANY_2KM = Grid(47.0, 55.2, 5.5, 15.5, width=349, height=456)

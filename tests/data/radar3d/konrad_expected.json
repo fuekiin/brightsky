@@ -1,0 +1,254 @@
+{
+ "timestamp": "2026-09-16T11:50:00Z",
+ "cells": [
+  {
+   "id": 112,
+   "lat": 46.60631,
+   "lon": 7.62553,
+   "heightM": 3955,
+   "echoTopM": 5028,
+   "echoBottomM": 2672,
+   "areaKm2": 13.8125,
+   "maxDbz": 49.29,
+   "severity": 0.12,
+   "gustKmh": 33.391,
+   "gustFlag": false,
+   "heavyRainMm": 3.22,
+   "hail": false,
+   "largeHail": false,
+   "hailTopM": null,
+   "hailBottomM": null,
+   "hailAreaKm2": 0.0,
+   "lightningRate": 0,
+   "lightningDensity": 0.0,
+   "rateHistory": [
+    null,
+    1,
+    0
+   ],
+   "lightningJumps": 0,
+   "mesoIndex": 0,
+   "mesoBaseM": null,
+   "mesoTopM": null,
+   "cloudTopM": null,
+   "speedKmh": 33.391,
+   "firstSeen": "2026-09-16T11:40:00Z",
+   "track": [
+    [
+     46.6154,
+     7.65645
+    ],
+    [
+     46.62449,
+     7.68736
+    ],
+    [
+     46.63358,
+     7.71827
+    ],
+    [
+     46.64267,
+     7.74918
+    ],
+    [
+     46.65176,
+     7.78008
+    ],
+    [
+     46.66085,
+     7.81098
+    ],
+    [
+     46.66994,
+     7.84187
+    ],
+    [
+     46.67903,
+     7.87276
+    ],
+    [
+     46.68813,
+     7.90364
+    ],
+    [
+     46.69722,
+     7.93452
+    ],
+    [
+     46.70632,
+     7.9654
+    ],
+    [
+     46.71542,
+     7.99627
+    ]
+   ]
+  },
+  {
+   "id": 26,
+   "lat": 47.59234,
+   "lon": 10.75095,
+   "heightM": 2459,
+   "echoTopM": 4060,
+   "echoBottomM": 1090,
+   "areaKm2": 11.9375,
+   "maxDbz": 51.78,
+   "severity": 0.16,
+   "gustKmh": 42.997,
+   "gustFlag": false,
+   "heavyRainMm": 5.24,
+   "hail": false,
+   "largeHail": false,
+   "hailTopM": null,
+   "hailBottomM": null,
+   "hailAreaKm2": 0.0,
+   "lightningRate": 0,
+   "lightningDensity": 0.0,
+   "rateHistory": [
+    null,
+    null,
+    0
+   ],
+   "lightningJumps": 0,
+   "mesoIndex": 0,
+   "mesoBaseM": null,
+   "mesoTopM": null,
+   "cloudTopM": null,
+   "speedKmh": 42.997,
+   "firstSeen": "2026-09-16T11:45:00Z",
+   "track": [
+    [
+     47.61008,
+     10.78678
+    ],
+    [
+     47.6278,
+     10.82265
+    ],
+    [
+     47.6455,
+     10.85855
+    ],
+    [
+     47.6632,
+     10.89449
+    ],
+    [
+     47.68088,
+     10.93047
+    ],
+    [
+     47.69854,
+     10.96649
+    ],
+    [
+     47.7162,
+     11.00254
+    ],
+    [
+     47.73384,
+     11.03863
+    ],
+    [
+     47.75146,
+     11.07475
+    ],
+    [
+     47.76908,
+     11.11091
+    ],
+    [
+     47.78668,
+     11.14711
+    ],
+    [
+     47.80426,
+     11.18335
+    ]
+   ]
+  },
+  {
+   "id": 115,
+   "lat": 48.02384,
+   "lon": 10.77383,
+   "heightM": 2257,
+   "echoTopM": 5294,
+   "echoBottomM": 892,
+   "areaKm2": 47.1875,
+   "maxDbz": 59.75,
+   "severity": 0.3,
+   "gustKmh": 45.895,
+   "gustFlag": false,
+   "heavyRainMm": 3.63,
+   "hail": false,
+   "largeHail": false,
+   "hailTopM": null,
+   "hailBottomM": null,
+   "hailAreaKm2": 0.0,
+   "lightningRate": 11,
+   "lightningDensity": 0.233,
+   "rateHistory": [
+    null,
+    null,
+    0
+   ],
+   "lightningJumps": 0,
+   "mesoIndex": 0,
+   "mesoBaseM": null,
+   "mesoTopM": null,
+   "cloudTopM": null,
+   "speedKmh": 45.895,
+   "firstSeen": "2026-09-16T11:45:00Z",
+   "track": [
+    [
+     48.04081,
+     10.81452
+    ],
+    [
+     48.05775,
+     10.85526
+    ],
+    [
+     48.07465,
+     10.89606
+    ],
+    [
+     48.0915,
+     10.93691
+    ],
+    [
+     48.10831,
+     10.97781
+    ],
+    [
+     48.12509,
+     11.01877
+    ],
+    [
+     48.14181,
+     11.05978
+    ],
+    [
+     48.1585,
+     11.10084
+    ],
+    [
+     48.17515,
+     11.14196
+    ],
+    [
+     48.19175,
+     11.18312
+    ],
+    [
+     48.20831,
+     11.22435
+    ],
+    [
+     48.22483,
+     11.26562
+    ]
+   ]
+  }
+ ]
+}
