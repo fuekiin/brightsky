@@ -939,3 +939,82 @@ async def sources(
     if not rows:
         raise NoData("No sources match your criteria")
     return {'sources': make_dicts(rows)}
+
+
+RADAR3D_ENCODING = {
+    'scale': 0.5, 'offset': -32.0, 'nodata': 0, 'unit': 'dBZ'}
+RADAR3D_SOURCE = (
+    'Deutscher Wetterdienst, sweep_vol_z volume scans (17 sites)')
+
+
+async def radar3d(
+    conn, lat, lon, distance=100000, from_date=None, to_date=None,
+    resolution=1000,
+):
+    from brightsky.radar3d.grid import GERMANY_1KM, OutsideGrid
+    grid = GERMANY_1KM
+    scale = resolution // 1000
+    try:
+        crop = grid.around(lat, lon, distance, align=scale)
+    except OutsideGrid:
+        raise NoData("lat/lon lies outside the radar3d coverage")
+    if to_date is None:
+        to_date = await conn.fetchval(
+            "SELECT MAX(timestamp) FROM radar3d_frames WHERE product = 'rain'"
+        )
+        if to_date is None:
+            raise NoData("No radar3d frames are available yet")
+    if from_date is None:
+        from_date = to_date - datetime.timedelta(minutes=55)
+    rows = await conn.fetch(
+        """
+        SELECT timestamp, sites FROM radar3d_frames
+        WHERE product = 'rain' AND timestamp BETWEEN $1 AND $2
+        ORDER BY timestamp
+        """,
+        from_date, to_date,
+    )
+    min_lat, max_lat, min_lon, max_lon = grid.bounds(crop)
+    query = f'?bbox={min_lat:.6f},{max_lat:.6f},{min_lon:.6f},{max_lon:.6f}'
+    if scale > 1:
+        query += f'&resolution={resolution}'
+    return {
+        'grid': {
+            'width': crop.width // scale,
+            'height': crop.height // scale,
+            'levels': grid.levels,
+            'level_m': grid.level_m,
+            'base_m': grid.base_m,
+            'min_lat': round(min_lat, 6),
+            'max_lat': round(max_lat, 6),
+            'min_lon': round(min_lon, 6),
+            'max_lon': round(max_lon, 6),
+            'encoding': RADAR3D_ENCODING,
+            'channels': 1,
+            'resolution': resolution,
+        },
+        'frames': [
+            {
+                'timestamp': row['timestamp'],
+                'sites': row['sites'],
+                'rain': (
+                    f"/radar3d/rain/{row['timestamp']:%Y-%m-%dT%H:%M:%SZ}"
+                    f"{query}"
+                ),
+                'clouds': None,
+                'cells': None,
+            }
+            for row in rows
+        ],
+        'flows_clouds': False,
+        'source': RADAR3D_SOURCE,
+    }
+
+
+async def radar3d_frame_exists(conn, product, timestamp):
+    return bool(await conn.fetchval(
+        """
+        SELECT 1 FROM radar3d_frames WHERE product = $1 AND timestamp = $2
+        """,
+        product, timestamp,
+    ))

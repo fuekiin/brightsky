@@ -437,3 +437,89 @@ class CityProductParams(
     LatLon,
 ):
     pass
+
+
+class Radar3DResolution(BaseModel):
+    resolution: int = Field(
+        default=1000,
+        description="Horizontal voxel size in metres: `1000` or `2000` (the 1 km grid max-pooled 2×2).",  # noqa
+        examples=[1000],
+    )
+
+    @field_validator('resolution', mode='after')
+    @classmethod
+    def validate_resolution(cls, value):
+        if value not in (1000, 2000):
+            raise ValueError("resolution must be 1000 or 2000")
+        return value
+
+
+class Radar3DParams(
+    Radar3DResolution,
+    LatLon,
+):
+    distance: int = Field(
+        default=100000,
+        ge=1000,
+        description="Half-width of the crop in metres: data reaches this far to each side of `lat`/`lon`, cut off at the edges of the national grid. At most 250000 at 1 km resolution and 600000 at 2 km.",  # noqa
+        examples=[100000],
+    )
+    from_date: Annotated[
+        datetime.datetime,
+        Query(alias='from'),
+    ] = Field(
+        default=None,
+        description="Timestamp of the first frame, ISO 8601. (_Defaults to 55 minutes before `to`._)",  # noqa
+        examples=["2026-09-16T11:05:00Z"],
+    )
+    to_date: Annotated[
+        datetime.datetime,
+        Query(alias='to'),
+    ] = Field(
+        default=None,
+        description="Timestamp of the last frame, ISO 8601. (_Defaults to the latest available frame._)",  # noqa
+        examples=["2026-09-16T12:00:00Z"],
+    )
+
+    @model_validator(mode='after')
+    def validate_position_and_distance(self):
+        if self.lat is None or self.lon is None:
+            raise ValueError("Please supply lat & lon")
+        limit = 250000 if self.resolution == 1000 else 600000
+        if self.distance > limit:
+            raise ValueError(
+                f"distance must not exceed {limit} m at {self.resolution} m "
+                f"resolution")
+        return self
+
+    @field_validator('from_date', 'to_date', mode='after')
+    @classmethod
+    def ensure_tzinfo(cls, value):
+        if value is None or value.tzinfo:
+            return value
+        return value.replace(tzinfo=datetime.UTC)
+
+    @model_validator(mode='after')
+    def validate_window(self):
+        if self.from_date and self.to_date:
+            if self.to_date < self.from_date:
+                raise ValueError("'to' must not lie before 'from'")
+            if self.to_date - self.from_date > datetime.timedelta(hours=3):
+                raise ValueError("The window must not exceed 3 hours")
+        return self
+
+
+class Radar3DFrameParams(Radar3DResolution):
+    bbox: list[float] = Field(
+        description="Crop bounds `minLat,maxLat,minLon,maxLon` in decimal degrees, as given in the manifest's frame URLs.",  # noqa
+        examples=["52.3,52.7,13.1,13.7"],
+    )
+
+    @field_validator('bbox', mode='before')
+    @classmethod
+    def validate_bbox(cls, value):
+        bbox = _split(value, converter=float)
+        if len(bbox) != 4 or bbox[0] >= bbox[1] or bbox[2] >= bbox[3]:
+            raise ValueError(
+                "The 'bbox' parameter must be minLat,maxLat,minLon,maxLon")
+        return bbox

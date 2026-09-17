@@ -1,5 +1,6 @@
 import base64
 import contextlib
+import datetime
 from pathlib import Path
 from typing import Any, Annotated
 
@@ -8,6 +9,7 @@ import orjson
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
+from starlette.concurrency import run_in_threadpool
 
 import brightsky
 from brightsky import query
@@ -20,6 +22,7 @@ from .models import (
     CurrentWeatherResponse,
     NotFoundResponse,
     PollenResponse,
+    Radar3DResponse,
     RadarResponse,
     SourcesResponse,
     SynopResponse,
@@ -33,6 +36,8 @@ from .params import (
     CityProductParams,
     CurrentWeatherParams,
     PollenParams,
+    Radar3DFrameParams,
+    Radar3DParams,
     RadarParams,
     SourcesParams,
     SynopParams,
@@ -707,3 +712,94 @@ async def thermal_hazard(
     )
     enhance(result, timezone=q.timezone)
     return ORJSONResponse(result)
+
+
+@app.get(
+    '/radar3d',
+    operation_id='getRadar3D',
+    summary='Radar 3D (nano)',
+    responses=common_responses,
+)
+async def radar3d(
+    q: Annotated[Radar3DParams, Query()],
+) -> Radar3DResponse:
+    """
+    Manifest of the nano 3D radar products: a voxel grid (regular in Web
+    Mercator between the returned bounds, row 0 = north; `levels` slabs of
+    `level_m` metres from `base_m` above sea level) around `lat`/`lon`, and
+    one entry per 5-minute frame with the URLs of the binary crops.
+
+    Frames are `NANO3D` binaries: a 32-byte little-endian header (magic
+    `NANO3D`, u16 version, width, height, levels, channels, u32 zlib
+    payload length, u32 extra block length, 8 reserved bytes), then the
+    zlib-compressed level-major voxel bytes. Rain voxels are one byte,
+    `dBZ = v × 0.5 − 32`, `0` = no echo. Frames are immutable and cached
+    for a day.
+
+    Data: DWD `sweep_vol_z` volume scans of all 17 German radar sites,
+    gridded to 1 km × 500 m (CC BY 4.0, Deutscher Wetterdienst).
+    """
+    result = await query.radar3d(
+        ctx['pool'],
+        lat=q.lat,
+        lon=q.lon,
+        distance=q.distance,
+        from_date=q.from_date,
+        to_date=q.to_date,
+        resolution=q.resolution,
+    )
+    return ORJSONResponse(result)
+
+
+def _parse_frame_timestamp(value):
+    try:
+        ts = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(
+            status_code=422, detail="Invalid ISO 8601 timestamp")
+    return ts if ts.tzinfo else ts.replace(tzinfo=datetime.UTC)
+
+
+def _rain_crop_bytes(timestamp, bbox, resolution):
+    from brightsky.radar3d import frame
+    from brightsky.radar3d.grid import GERMANY_1KM, OutsideGrid
+    from brightsky.radar3d.store import FrameMissing, FrameStore
+    scale = resolution // 1000
+    try:
+        crop = GERMANY_1KM.crop(*bbox, align=scale)
+        voxels = FrameStore(settings.RADAR3D_DATA_DIR).crop(
+            'rain', timestamp, crop, scale)
+    except (OutsideGrid, FrameMissing) as e:
+        raise query.NoData(str(e))
+    return frame.encode(voxels)
+
+
+@app.get(
+    '/radar3d/rain/{timestamp}',
+    operation_id='getRadar3DRain',
+    summary='Radar 3D rain frame (nano)',
+    responses=common_responses,
+    response_class=Response,
+)
+async def radar3d_rain(
+    timestamp: str,
+    q: Annotated[Radar3DFrameParams, Query()],
+):
+    """
+    One reflectivity frame, cropped to `bbox`, as a `NANO3D` binary (see
+    [`/radar3d`](/operations/getRadar3D)). Use the URLs from the manifest.
+    """
+    ts = _parse_frame_timestamp(timestamp)
+    if not await query.radar3d_frame_exists(ctx['pool'], 'rain', ts):
+        raise query.NoData(f"No rain frame for {timestamp}")
+    data = await run_in_threadpool(
+        _rain_crop_bytes, ts, q.bbox, q.resolution)
+    return Response(
+        content=data,
+        media_type='application/octet-stream',
+        headers={
+            'Cache-Control': 'public, max-age=86400, immutable',
+            # Prevent traefik from gzipping the pre-compressed content
+            'Content-Encoding': 'identity',
+        },
+    )

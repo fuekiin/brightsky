@@ -11,7 +11,7 @@ The public instance at `https://api.brightsky.dev/` is free-to-use for all purpo
 * Check out [`/weather`](operations/getWeather) for hourly weather observations and forecasts.
 * Check out [`/radar`](operations/getRadar) if you're looking for a high-resolution rain radar.
 * Check out [`/alerts`](operations/getAlerts) if you're interested in weather alerts.
-* Check out [`/pollen`](operations/getPollen), [`/biowetter`](operations/getBiowetter), [`/uv_index`](operations/getUVIndex), and [`/thermal_hazard`](operations/getThermalHazard) for the DWD's health forecasts.
+* Check out [`/pollen`](operations/getPollen), [`/biowetter`](operations/getBiowetter), [`/uv_index`](operations/getUVIndex), and [`/thermal_hazard`](operations/getThermalHazard) for the DWD's health forecasts, and [`/radar3d`](operations/getRadar3D) for the 3D radar volumes.
 
 ... or keep reading below for some background information.
 

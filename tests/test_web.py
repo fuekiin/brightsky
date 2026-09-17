@@ -1074,3 +1074,101 @@ def test_cors(synop_data, db):
         assert 'access-control-allow-origin' not in resp.headers
         resp = _get_response(headers={'Origin': brightsky_dev})
         assert resp.headers['access-control-allow-origin'] == brightsky_dev
+
+
+# nano radar3d -----------------------------------------------------------
+
+from brightsky.radar3d import frame as radar3d_frame  # noqa: E402
+from brightsky.radar3d.grid import GERMANY_1KM  # noqa: E402
+from brightsky.radar3d.store import FrameStore, index_frame  # noqa: E402
+
+
+RADAR3D_TS = datetime.datetime(2026, 9, 16, 12, 0, tzinfo=tzutc())
+
+
+@pytest.fixture
+def radar3d_data(db, tmp_path):
+    store = FrameStore(tmp_path)
+    vol = np.zeros(GERMANY_1KM.shape, np.uint8)
+    crop = GERMANY_1KM.around(52.52, 13.41, 5000)
+    vol[4, crop.row0:crop.row1, crop.col0:crop.col1] = 150
+    for minutes in (0, 5, 10):
+        ts = RADAR3D_TS + datetime.timedelta(minutes=minutes)
+        index_frame(db.conn, 'rain', ts, store.write('rain', ts, vol), 17)
+    with settings(RADAR3D_DATA_DIR=str(tmp_path)):
+        yield store
+
+
+def test_radar3d_manifest(radar3d_data, api):
+    resp = api.get('/radar3d?lat=52.52&lon=13.41&distance=20000')
+    assert resp.status_code == 200
+    data = resp.json()
+    grid = data['grid']
+    assert grid['levels'] == 24 and grid['level_m'] == 500.0
+    assert grid['channels'] == 1 and grid['resolution'] == 1000
+    assert grid['encoding'] == {
+        'scale': 0.5, 'offset': -32.0, 'nodata': 0, 'unit': 'dBZ'}
+    assert grid['min_lat'] < 52.52 < grid['max_lat']
+    assert grid['min_lon'] < 13.41 < grid['max_lon']
+    assert 38 <= grid['width'] <= 44 and 38 <= grid['height'] <= 44
+    assert [f['timestamp'] for f in data['frames']] == [
+        '2026-09-16T12:00:00+00:00',
+        '2026-09-16T12:05:00+00:00',
+        '2026-09-16T12:10:00+00:00',
+    ]
+    f = data['frames'][0]
+    assert f['clouds'] is None and f['cells'] is None and f['sites'] == 17
+    assert f['rain'].startswith('/radar3d/rain/2026-09-16T12:00:00Z?bbox=')
+    assert data['flows_clouds'] is False
+    # Explicit window and the 2 km level of detail
+    resp = api.get(
+        '/radar3d?lat=52.52&lon=13.41&distance=20000'
+        '&from=2026-09-16T12:05Z&to=2026-09-16T12:05Z&resolution=2000')
+    assert [f['timestamp'] for f in resp.json()['frames']] == [
+        '2026-09-16T12:05:00+00:00']
+    assert resp.json()['grid']['resolution'] == 2000
+    assert resp.json()['frames'][0]['rain'].endswith('&resolution=2000')
+    # Validation and coverage
+    assert api.get('/radar3d?lat=52.52').status_code == 422
+    assert api.get('/radar3d?lat=52.52&lon=13.41&distance=300000') \
+        .status_code == 422
+    assert api.get('/radar3d?lat=40&lon=13.41').status_code == 404
+    assert api.get(
+        '/radar3d?lat=52.52&lon=13.41&from=2020-01-01&to=2020-01-01T01:00'
+    ).json()['frames'] == []
+    assert api.get(
+        '/radar3d?lat=52.52&lon=13.41&from=2020-01-01&to=2020-01-02'
+    ).status_code == 422                     # window longer than 3 hours
+
+
+def test_radar3d_rain_frame(radar3d_data, api):
+    manifest = api.get('/radar3d?lat=52.52&lon=13.41&distance=20000').json()
+    grid = manifest['grid']
+    resp = api.get(manifest['frames'][0]['rain'])
+    assert resp.status_code == 200
+    assert resp.headers['content-type'] == 'application/octet-stream'
+    assert 'immutable' in resp.headers['cache-control']
+    header, voxels, extra = radar3d_frame.decode(resp.content)
+    assert (header['width'], header['height'], header['levels']) == \
+        (grid['width'], grid['height'], 24)
+    assert extra == b''
+    assert voxels[4].max() == 150 and voxels[3].max() == 0
+    assert voxels[4].mean() < 150            # box smaller than the crop
+    # 2 km: half the size, peak preserved
+    manifest2 = api.get(
+        '/radar3d?lat=52.52&lon=13.41&distance=20000&resolution=2000').json()
+    header2, voxels2, _ = radar3d_frame.decode(
+        api.get(manifest2['frames'][0]['rain']).content)
+    assert header2['width'] == manifest2['grid']['width']
+    assert grid['width'] <= header2['width'] * 2 <= grid['width'] + 2
+    assert voxels2[4].max() == 150
+    # Missing frame, bad timestamp, bad bbox, outside coverage
+    assert api.get(
+        '/radar3d/rain/2026-09-16T13:00:00Z?bbox=52,53,13,14').status_code \
+        == 404
+    assert api.get('/radar3d/rain/yesterday?bbox=52,53,13,14').status_code \
+        == 422
+    assert api.get('/radar3d/rain/2026-09-16T12:00:00Z?bbox=1,2,3') \
+        .status_code == 422
+    assert api.get('/radar3d/rain/2026-09-16T12:00:00Z?bbox=40,41,13,14') \
+        .status_code == 404

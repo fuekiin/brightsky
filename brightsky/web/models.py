@@ -1032,3 +1032,69 @@ class ThermalHazardResponse(HealthMetadata):
             'nullable': True,
         },
     )
+
+
+class Radar3DGrid(ResponseModel):
+    width: int = Field(description="Voxel columns of the crop")
+    height: int = Field(description="Voxel rows of the crop (row 0 = north)")
+    levels: int = Field(description="Vertical slabs", examples=[24])
+    level_m: float = Field(
+        description="Slab thickness in metres", examples=[500.0])
+    base_m: float = Field(
+        description="Height above sea level of the lowest slab's bottom, in metres",  # noqa
+        examples=[0.0],
+    )
+    min_lat: float
+    max_lat: float
+    min_lon: float
+    max_lon: float
+    encoding: dict = Field(
+        description="How to decode a voxel byte: `value × scale + offset`, `nodata` = no echo",  # noqa
+        examples=[
+            {'scale': 0.5, 'offset': -32.0, 'nodata': 0, 'unit': 'dBZ'},
+        ],
+    )
+    channels: int = Field(description="Bytes per voxel", examples=[1])
+    resolution: int = Field(
+        description="Horizontal voxel size in metres", examples=[1000])
+
+
+class Radar3DFrame(ResponseModel):
+    timestamp: datetime.datetime = Field(
+        description="Start of the 5-minute volume scan cycle (UTC)",
+        examples=["2026-09-16T12:00:00+00:00"],
+    )
+    sites: int = Field(
+        description="Number of radar sites that contributed to this frame",
+        examples=[17],
+        json_schema_extra={'nullable': True},
+    )
+    rain: str = Field(
+        description="URL of the binary reflectivity frame for this crop",
+        examples=[
+            "/radar3d/rain/2026-09-16T12:00:00Z?bbox=52.3,52.7,13.1,13.7",
+        ],
+    )
+    clouds: str = Field(
+        default=None,
+        description="URL of the cloud volume frame (phase 2; `null` for now)",
+        json_schema_extra={'nullable': True},
+    )
+    cells: str = Field(
+        default=None,
+        description="URL of the convective cells JSON (phase 2; `null` for now)",  # noqa
+        json_schema_extra={'nullable': True},
+    )
+
+
+class Radar3DResponse(ResponseModel):
+    grid: Radar3DGrid
+    frames: list[Radar3DFrame]
+    flows_clouds: bool = Field(
+        description="Whether cloud frames carry a flow field (phase 2)")
+    source: str = Field(
+        description="Attribution of the underlying DWD product",
+        examples=[
+            "Deutscher Wetterdienst, sweep_vol_z volume scans (17 sites)",
+        ],
+    )
