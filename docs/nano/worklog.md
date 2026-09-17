@@ -282,3 +282,13 @@ endpoint returns `{"timestamp", "cells": [StormCell…], "source"}` filtered by 
 
 **Not done:** 500 m × 250 m detail boxes (phase 3 option) — not cheap: a second gridding pass
 at 4× voxel density inside KONRAD3D cell boxes plus a tile scheme; noted as a follow-up.
+
+**App side (same day, from the WeatherGermany session):** phases 2–3 wired and verified
+against the local serve, nothing to change here. Around 54.4/9.0: rain 260×224×24 plus clouds
+130×112×24×2 with 11 flow fields from the extra blocks in ~0.8 s for the bundle; ICON clouds
+render over the live rain. Cells decode (unit test on the JSON shape); the live lightning/ring
+path stays untested until a storm day. **Client behaviour to keep in mind:** one manifest, then
+rain/clouds/cells fetched concurrently; a `null` cloud entry takes the nearest cloud frame so
+index matching holds; clouds or cells failing never take the rain down; `flow_w`/`flow_h` are
+read from the block and the vectors used as cloud-grid cells per 5 min. Deployment decision
+is with the owner.
