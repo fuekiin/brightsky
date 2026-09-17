@@ -943,8 +943,11 @@ async def sources(
 
 RADAR3D_ENCODING = {
     'scale': 0.5, 'offset': -32.0, 'nodata': 0, 'unit': 'dBZ'}
+RADAR3D_CLOUDS_ENCODING = {
+    'scale': 0.01, 'offset': 0.0, 'nodata': 0, 'unit': 'g/m3;percent'}
 RADAR3D_SOURCE = (
-    'Deutscher Wetterdienst, sweep_vol_z volume scans (17 sites)')
+    'Deutscher Wetterdienst: sweep_vol_z volume scans (17 sites), '
+    'ICON-D2 model levels, KONRAD3D cells')
 
 
 async def radar3d(
@@ -955,7 +958,9 @@ async def radar3d(
     grid = GERMANY_1KM
     scale = resolution // 1000
     try:
-        crop = grid.around(lat, lon, distance, align=scale)
+        # Always aligned to two 1 km cells, so the crop is one crop on both
+        # the rain grid and the (halved) cloud grid
+        crop = grid.around(lat, lon, distance, align=2)
     except OutsideGrid:
         raise NoData("lat/lon lies outside the radar3d coverage")
     if to_date is None:
@@ -968,16 +973,42 @@ async def radar3d(
         from_date = to_date - datetime.timedelta(minutes=55)
     rows = await conn.fetch(
         """
-        SELECT timestamp, sites FROM radar3d_frames
-        WHERE product = 'rain' AND timestamp BETWEEN $1 AND $2
+        SELECT product, timestamp, sites FROM radar3d_frames
+        WHERE product IN ('rain', 'clouds', 'cells')
+          AND timestamp BETWEEN $1 AND $2
         ORDER BY timestamp
         """,
         from_date, to_date,
     )
+    available = {}
+    for row in rows:
+        available.setdefault(row['timestamp'], {})[row['product']] = row
     min_lat, max_lat, min_lon, max_lon = grid.bounds(crop)
-    query = f'?bbox={min_lat:.6f},{max_lat:.6f},{min_lon:.6f},{max_lon:.6f}'
-    if scale > 1:
-        query += f'&resolution={resolution}'
+    bbox = f'?bbox={min_lat:.6f},{max_lat:.6f},{min_lon:.6f},{max_lon:.6f}'
+    rain_query = bbox + (f'&resolution={resolution}' if scale > 1 else '')
+    bounds = {
+        'min_lat': round(min_lat, 6),
+        'max_lat': round(max_lat, 6),
+        'min_lon': round(min_lon, 6),
+        'max_lon': round(max_lon, 6),
+    }
+    frames = []
+    for ts in sorted(available):
+        products = available[ts]
+        if 'rain' not in products:
+            continue
+        stamp = f'{ts:%Y-%m-%dT%H:%M:%SZ}'
+        frames.append({
+            'timestamp': ts,
+            'sites': products['rain']['sites'],
+            'rain': f'/radar3d/rain/{stamp}{rain_query}',
+            'clouds': (
+                f'/radar3d/clouds/{stamp}{bbox}'
+                if 'clouds' in products else None),
+            'cells': (
+                f'/radar3d/cells/{stamp}{bbox}'
+                if 'cells' in products else None),
+        })
     return {
         'grid': {
             'width': crop.width // scale,
@@ -985,28 +1016,25 @@ async def radar3d(
             'levels': grid.levels,
             'level_m': grid.level_m,
             'base_m': grid.base_m,
-            'min_lat': round(min_lat, 6),
-            'max_lat': round(max_lat, 6),
-            'min_lon': round(min_lon, 6),
-            'max_lon': round(max_lon, 6),
+            **bounds,
             'encoding': RADAR3D_ENCODING,
             'channels': 1,
             'resolution': resolution,
         },
-        'frames': [
-            {
-                'timestamp': row['timestamp'],
-                'sites': row['sites'],
-                'rain': (
-                    f"/radar3d/rain/{row['timestamp']:%Y-%m-%dT%H:%M:%SZ}"
-                    f"{query}"
-                ),
-                'clouds': None,
-                'cells': None,
-            }
-            for row in rows
-        ],
-        'flows_clouds': False,
+        'grid_clouds': {
+            'width': crop.width // 2,
+            'height': crop.height // 2,
+            'levels': grid.levels,
+            'level_m': grid.level_m,
+            'base_m': grid.base_m,
+            **bounds,
+            'encoding': RADAR3D_CLOUDS_ENCODING,
+            'channel_scales': [0.01, 0.4],
+            'channels': 2,
+            'resolution': 2000,
+        },
+        'frames': frames,
+        'flows_clouds': any(f['clouds'] for f in frames),
         'source': RADAR3D_SOURCE,
     }
 

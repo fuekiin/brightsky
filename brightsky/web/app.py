@@ -22,6 +22,7 @@ from .models import (
     CurrentWeatherResponse,
     NotFoundResponse,
     PollenResponse,
+    Radar3DCellsResponse,
     Radar3DResponse,
     RadarResponse,
     SourcesResponse,
@@ -36,6 +37,7 @@ from .params import (
     CityProductParams,
     CurrentWeatherParams,
     PollenParams,
+    Radar3DBBoxParams,
     Radar3DFrameParams,
     Radar3DParams,
     RadarParams,
@@ -766,12 +768,49 @@ def _rain_crop_bytes(timestamp, bbox, resolution):
     from brightsky.radar3d.store import FrameMissing, FrameStore
     scale = resolution // 1000
     try:
-        crop = GERMANY_1KM.crop(*bbox, align=scale)
+        crop = GERMANY_1KM.crop(*bbox, align=2)
         voxels = FrameStore(settings.RADAR3D_DATA_DIR).crop(
             'rain', timestamp, crop, scale)
     except (OutsideGrid, FrameMissing) as e:
         raise query.NoData(str(e))
     return frame.encode(voxels)
+
+
+def _clouds_crop_bytes(timestamp, bbox):
+    from brightsky.radar3d import frame
+    from brightsky.radar3d.clouds import flow_block
+    from brightsky.radar3d.grid import GERMANY_2KM, OutsideGrid
+    from brightsky.radar3d.store import FrameMissing, FrameStore
+    store = FrameStore(settings.RADAR3D_DATA_DIR)
+    try:
+        crop = GERMANY_2KM.crop(*bbox)
+        voxels = store.crop('clouds', timestamp, crop)
+        flow = store.open('clouds_flow', timestamp)
+    except (OutsideGrid, FrameMissing) as e:
+        raise query.NoData(str(e))
+    return frame.encode(voxels, channels=2, extra=flow_block(flow, crop))
+
+
+def _cells_json(timestamp, bbox):
+    from brightsky.radar3d.cells import SOURCE, cells_in_bbox
+    from brightsky.radar3d.store import FrameMissing, FrameStore
+    try:
+        data = FrameStore(settings.RADAR3D_DATA_DIR).read_json(
+            'cells', timestamp)
+    except FrameMissing as e:
+        raise query.NoData(str(e))
+    return {
+        'timestamp': data['timestamp'],
+        'cells': cells_in_bbox(data['cells'], *bbox),
+        'source': SOURCE,
+    }
+
+
+_FRAME_HEADERS = {
+    'Cache-Control': 'public, max-age=86400, immutable',
+    # Prevent traefik from gzipping the pre-compressed content
+    'Content-Encoding': 'identity',
+}
 
 
 @app.get(
@@ -797,9 +836,58 @@ async def radar3d_rain(
     return Response(
         content=data,
         media_type='application/octet-stream',
-        headers={
-            'Cache-Control': 'public, max-age=86400, immutable',
-            # Prevent traefik from gzipping the pre-compressed content
-            'Content-Encoding': 'identity',
-        },
+        headers=_FRAME_HEADERS,
     )
+
+
+@app.get(
+    '/radar3d/clouds/{timestamp}',
+    operation_id='getRadar3DClouds',
+    summary='Radar 3D cloud frame (nano)',
+    responses=common_responses,
+    response_class=Response,
+)
+async def radar3d_clouds(
+    timestamp: str,
+    q: Annotated[Radar3DBBoxParams, Query()],
+):
+    """
+    One cloud volume frame (ICON-D2, 2 km × 500 m) cropped to `bbox`, as a
+    `NANO3D` binary with two interleaved channels per voxel: condensed
+    water in g/m³ (`v × 0.01`) and cloud cover in % (`v × 0.4`). The extra
+    block carries the flow field: `u16 flow_w, u16 flow_h`, then
+    `flow_h × flow_w` little-endian float16 pairs `(dx, dy)`, row-major
+    from the north, spanning the frame's bounds, in cloud-grid cells per
+    5 minutes (`dx` east, `dy` south).
+    """
+    ts = _parse_frame_timestamp(timestamp)
+    if not await query.radar3d_frame_exists(ctx['pool'], 'clouds', ts):
+        raise query.NoData(f"No cloud frame for {timestamp}")
+    data = await run_in_threadpool(_clouds_crop_bytes, ts, q.bbox)
+    return Response(
+        content=data,
+        media_type='application/octet-stream',
+        headers=_FRAME_HEADERS,
+    )
+
+
+@app.get(
+    '/radar3d/cells/{timestamp}',
+    operation_id='getRadar3DCells',
+    summary='Radar 3D convective cells (nano)',
+    responses=common_responses,
+)
+async def radar3d_cells(
+    timestamp: str,
+    q: Annotated[Radar3DBBoxParams, Query()],
+) -> Radar3DCellsResponse:
+    """
+    The DWD's KONRAD3D convective cells at one 5-minute stamp whose
+    centroid lies inside `bbox`: position and heights, intensity, lightning
+    (LINET), hail, mesocyclone, gusts, motion and the forecast track.
+    """
+    ts = _parse_frame_timestamp(timestamp)
+    if not await query.radar3d_frame_exists(ctx['pool'], 'cells', ts):
+        raise query.NoData(f"No cells for {timestamp}")
+    result = await run_in_threadpool(_cells_json, ts, q.bbox)
+    return ORJSONResponse(result, headers=_FRAME_HEADERS)

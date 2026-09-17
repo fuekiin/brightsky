@@ -1087,8 +1087,26 @@ class Radar3DFrame(ResponseModel):
     )
 
 
+class Radar3DCloudsGrid(Radar3DGrid):
+    channel_scales: list[float] = Field(
+        description="Per-channel value scale: water g/m³ per count, cover % per count",  # noqa
+        examples=[[0.01, 0.4]],
+    )
+
+
+class Radar3DCellsResponse(ResponseModel):
+    timestamp: str = Field(examples=["2026-09-16T12:00:00Z"])
+    cells: list[dict] = Field(
+        description="KONRAD3D cells inside the bbox (see the nano app's StormCell for the fields)",  # noqa
+    )
+    source: str
+
+
 class Radar3DResponse(ResponseModel):
     grid: Radar3DGrid
+    grid_clouds: Radar3DCloudsGrid = Field(
+        description="The cloud frames' grid: same bounds as `grid`, 2 km cells, two channels",  # noqa
+    )
     frames: list[Radar3DFrame]
     flows_clouds: bool = Field(
         description="Whether cloud frames carry a flow field (phase 2)")

@@ -1172,3 +1172,77 @@ def test_radar3d_rain_frame(radar3d_data, api):
         .status_code == 422
     assert api.get('/radar3d/rain/2026-09-16T12:00:00Z?bbox=40,41,13,14') \
         .status_code == 404
+
+
+@pytest.fixture
+def radar3d_all_products(radar3d_data, db):
+    from brightsky.radar3d.grid import GERMANY_2KM
+    store = radar3d_data
+    rg = np.zeros(GERMANY_2KM.shape + (2,), np.uint8)
+    crop = GERMANY_2KM.around(52.52, 13.41, 5000)
+    rg[6, crop.row0:crop.row1, crop.col0:crop.col1, 0] = 40
+    rg[6, crop.row0:crop.row1, crop.col0:crop.col1, 1] = 125
+    flow = np.zeros(GERMANY_2KM.shape[1:] + (2,), np.float32)
+    flow[..., 0] = 0.75
+    index_frame(db.conn, 'clouds', RADAR3D_TS,
+                store.write('clouds', RADAR3D_TS, rg), None)
+    store.write('clouds_flow', RADAR3D_TS, flow, dtype=np.float32)
+    cells = [
+        {'id': 1, 'lat': 52.52, 'lon': 13.41, 'lightningRate': 4,
+         'track': [[52.53, 13.42]]},
+        {'id': 2, 'lat': 48.0, 'lon': 11.0, 'lightningRate': 0, 'track': []},
+    ]
+    index_frame(db.conn, 'cells', RADAR3D_TS, store.write_json(
+        'cells', RADAR3D_TS,
+        {'timestamp': '2026-09-16T12:00:00Z', 'cells': cells}), 2)
+    return store
+
+
+def test_radar3d_manifest_lists_clouds_and_cells(radar3d_all_products, api):
+    data = api.get('/radar3d?lat=52.52&lon=13.41&distance=20000').json()
+    first, second = data['frames'][:2]
+    assert first['clouds'].startswith('/radar3d/clouds/2026-09-16T12:00:00Z?bbox=')  # noqa
+    assert first['cells'].startswith('/radar3d/cells/2026-09-16T12:00:00Z?bbox=')  # noqa
+    assert second['clouds'] is None and second['cells'] is None
+    assert data['flows_clouds'] is True
+    gc, g = data['grid_clouds'], data['grid']
+    assert (gc['width'], gc['height']) == (g['width'] // 2, g['height'] // 2)
+    assert gc['min_lat'] == g['min_lat'] and gc['max_lon'] == g['max_lon']
+    assert gc['channels'] == 2 and gc['channel_scales'] == [0.01, 0.4]
+    assert gc['resolution'] == 2000 and g['width'] % 2 == 0
+
+
+def test_radar3d_clouds_frame_with_flow(radar3d_all_products, api):
+    from brightsky.radar3d.clouds import parse_flow_block
+    data = api.get('/radar3d?lat=52.52&lon=13.41&distance=20000').json()
+    gc = data['grid_clouds']
+    resp = api.get(data['frames'][0]['clouds'])
+    assert resp.status_code == 200 and 'immutable' in resp.headers['cache-control']  # noqa
+    header, voxels, extra = radar3d_frame.decode(resp.content)
+    assert (header['width'], header['height'], header['channels']) == \
+        (gc['width'], gc['height'], 2)
+    assert voxels.shape == (24, gc['height'], gc['width'], 2)
+    assert voxels[6, :, :, 0].max() == 40 and voxels[6, :, :, 1].max() == 125
+    fw, fh, vectors = parse_flow_block(extra)
+    assert (fw, fh) == (-(-gc['width'] // 4), -(-gc['height'] // 4))
+    assert np.allclose(vectors[..., 0], 0.75) and np.all(vectors[..., 1] == 0)
+    assert api.get(
+        '/radar3d/clouds/2026-09-16T12:05:00Z?bbox=52,53,13,14').status_code \
+        == 404
+
+
+def test_radar3d_cells_endpoint(radar3d_all_products, api):
+    data = api.get('/radar3d?lat=52.52&lon=13.41&distance=20000').json()
+    resp = api.get(data['frames'][0]['cells'])
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['timestamp'] == '2026-09-16T12:00:00Z'
+    assert [c['id'] for c in body['cells']] == [1]        # inside the bbox
+    assert body['cells'][0]['track'] == [[52.53, 13.42]]
+    assert 'KONRAD3D' in body['source']
+    assert api.get(
+        '/radar3d/cells/2026-09-16T12:00:00Z?bbox=47,48.5,10,12').json()['cells'] \
+        == [{'id': 2, 'lat': 48.0, 'lon': 11.0, 'lightningRate': 0, 'track': []}]  # noqa
+    assert api.get(
+        '/radar3d/cells/2026-09-16T12:05:00Z?bbox=52,53,13,14').status_code \
+        == 404

@@ -509,6 +509,22 @@ class Radar3DParams(
         return self
 
 
+class Radar3DBBoxParams(BaseModel):
+    bbox: list[float] = Field(
+        description="Crop bounds `minLat,maxLat,minLon,maxLon` in decimal degrees, as given in the manifest's frame URLs.",  # noqa
+        examples=["52.3,52.7,13.1,13.7"],
+    )
+
+    @field_validator('bbox', mode='before')
+    @classmethod
+    def validate_bbox(cls, value):
+        bbox = _split(value, converter=float)
+        if len(bbox) != 4 or bbox[0] >= bbox[1] or bbox[2] >= bbox[3]:
+            raise ValueError(
+                "The 'bbox' parameter must be minLat,maxLat,minLon,maxLon")
+        return bbox
+
+
 class Radar3DFrameParams(Radar3DResolution):
     bbox: list[float] = Field(
         description="Crop bounds `minLat,maxLat,minLon,maxLon` in decimal degrees, as given in the manifest's frame URLs.",  # noqa
