@@ -212,7 +212,7 @@ class Radar3DIngest:
             retention_hours=settings.RADAR3D_RETENTION_HOURS,
             listing_interval=settings.RADAR3D_LISTING_INTERVAL,
             icon_steps=settings.RADAR3D_ICON_STEPS,
-            forecast_hours=settings.RADAR3D_FORECAST_HOURS,
+            forecast_minutes=settings.RADAR3D_FORECAST_MINUTES,
             min_free_gb=settings.RADAR3D_MIN_FREE_GB,
         )
         self.geometries = {}
@@ -533,6 +533,10 @@ class Radar3DIngest:
             cycle, len(sites), len(files),
             time.monotonic() - started, int((vol > 0).sum()))
         self.write_cloud_frame(cycle)
+        try:
+            self.write_forecast(cycle)
+        except Exception:
+            logger.exception('Forecast frames after %s failed', cycle)
 
     def _discard(self, cycle):
         shutil.rmtree(self.cycle_dir(cycle), ignore_errors=True)
@@ -591,7 +595,7 @@ class Radar3DIngest:
             try:
                 if self.load_run(run):
                     self.backfill_clouds()
-                    self.write_forecast(run)
+                    self.write_forecast()
             except Exception:
                 logger.exception('ICON-D2 run %s failed', run)
         with self.clouds_lock:
@@ -670,30 +674,48 @@ class Radar3DIngest:
 
     # -- forecast ----------------------------------------------------
 
-    def write_forecast(self, run):
-        """Hourly forecast frames of a run (rain via Z–M, clouds, flow),
-        products keyed by run so a new run never overwrites a served frame.
-        Frames older than the run's first hour are skipped; the manifest
-        decides which ones lie past the observed timeline."""
+    def newest_run(self):
+        return max(self.icon_runs) if self.icon_runs else None
+
+    def write_forecast(self, newest_observed=None):
+        """Forecast frames for the next `forecast_minutes` after the newest
+        observed rain frame, every 5 minutes, synthesised like the observed
+        cloud frames (rain via Z–M). Keyed by the newest loaded run so a
+        served frame is never overwritten; a new run rewrites the window
+        under its own key."""
+        run = self.newest_run()
+        if run is None:
+            return 0
+        if newest_observed is None:
+            now, since = self.window()
+            observed = self.indexed('rain', since)
+            if not observed:
+                return 0
+            newest_observed = max(observed)
+        rain_key = forecast_product('forecast_rain', run)
+        have = self.indexed(rain_key, newest_observed)
         written = 0
-        for ts in self.icon_runs.get(run, []):
-            if ts <= run or ts > run + datetime.timedelta(
-                    hours=self.settings['forecast_hours']):
+        steps = self.settings['forecast_minutes'] // 5
+        for k in range(1, steps + 1):
+            ts = newest_observed + k * CYCLE
+            if ts in have:
                 continue
             with self.clouds_lock:
                 try:
-                    rain, rg, flow = self.clouds.forecast_at(ts)
+                    rain, rg, flow = self.clouds.forecast_frame_at(ts)
                 except LookupError:
                     continue
-            rain_key = forecast_product('forecast_rain', run)
-            rain_path = self.store.write(rain_key, ts, rain)
+            path = self.store.write(rain_key, ts, rain)
             self.store.write(forecast_product('forecast_clouds', run), ts, rg)
             self.store.write(forecast_product('forecast_flow', run), ts, flow,
                              dtype=np.float32)
-            self.index(rain_key, ts, rain_path, None)
+            self.index(rain_key, ts, path, None)
             written += 1
-        logger.info('Wrote %d forecast frames for run %s', written, run)
+        if written:
+            logger.info('Wrote %d forecast frames (run %s) after %s',
+                        written, run, newest_observed)
         self.clean_forecasts(keep=run)
+        return written
 
     def clean_forecasts(self, keep):
         """Drop every forecast run but the newest one and `keep`."""
@@ -708,6 +730,16 @@ class Radar3DIngest:
                         continue
                     runs.add(run.replace(tzinfo=datetime.UTC))
         keepers = {keep, max(runs)} if runs else {keep}
+        cutoff = self.now() - datetime.timedelta(
+            hours=self.settings['retention_hours'])
+        for run in keepers:
+            for product in FORECAST_PRODUCTS:
+                key = forecast_product(product, run)
+                self.store.delete_before(key, cutoff)
+            if self.index == self._index_db:
+                with get_connection() as conn:
+                    delete_index_before(
+                        conn, forecast_product('forecast_rain', run), cutoff)
         for run in runs - keepers:
             for product in FORECAST_PRODUCTS:
                 run_dir = self.store.root / product / f'{run:{RUN_FORMAT}}'

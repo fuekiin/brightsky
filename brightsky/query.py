@@ -1050,8 +1050,8 @@ RADAR3D_FORECAST_ENCODING = {
 
 
 async def _radar3d_forecast(conn, grid, crop, bounds, bbox, newest_observed):
-    """The newest loaded ICON-D2 run's hourly frames past the observed
-    timeline, or None when no run is loaded."""
+    """The newest loaded ICON-D2 run's 5-minute frames past the observed
+    timeline (synthesised like the observed cloud frames), or None."""
     rows = await conn.fetch(
         """
         SELECT product, timestamp FROM radar3d_frames
@@ -1074,7 +1074,8 @@ async def _radar3d_forecast(conn, grid, crop, bounds, bbox, newest_observed):
         stamp = f'{ts:%Y-%m-%dT%H:%M:%SZ}'
         frames.append({
             'timestamp': ts,
-            'lead_h': int((ts - run).total_seconds() // 3600),
+            'lead_min': int((ts - newest_observed).total_seconds() // 60)
+            if newest_observed is not None else None,
             'rain': f'/radar3d/forecast/rain/{run_stamp}/{stamp}{bbox}',
             'clouds': f'/radar3d/forecast/clouds/{run_stamp}/{stamp}{bbox}',
             'cells': None,

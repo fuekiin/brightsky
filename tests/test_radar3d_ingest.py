@@ -291,42 +291,44 @@ def test_icon_run_produces_cloud_frames_on_rain_stamps(
     assert indexed['clouds'][-1] == (CYCLE, None)
 
 
-def test_icon_run_writes_forecast_frames_and_drops_old_runs(
+def test_forecast_window_after_the_newest_observed_frame(
         ingest, monkeypatch, tmp_path):
     ing, source, indexed = ingest(now=CYCLE + datetime.timedelta(minutes=5))
     ing.icon_source = FakeIcon()
     ing.settings['icon_steps'] = 3
-    ing.settings['forecast_hours'] = 2
+    ing.settings['forecast_minutes'] = 15
     L, H, W = ing.cloud_grid.shape
 
     def fake_step(run_dir, run_, step, sampler, full_h, q_levels, w_levels):
         pwc = np.zeros((L, H, W), np.float32)
-        pwc[4, 10, 10] = 1.0 * step
+        pwc[4, 10, 10] = 1.0
         return StepFields(
             run_ + datetime.timedelta(hours=step),
             np.zeros((L, H, W), np.float16), np.zeros((L, H, W), np.float16),
-            np.full((H, W), 4.0, np.float32), np.zeros((H, W), np.float32),
+            np.zeros((H, W), np.float32), np.zeros((H, W), np.float32),
             pwc=pwc.astype(np.float16))
     monkeypatch.setattr(ingest_module, 'load_step', fake_step)
     ing.full_h = np.linspace(20000, 0, 65)[:, None, None] \
         + np.zeros((65, H, W))
-    # two candidate runs (06 and 09 UTC of the fixture day) load in order
-    ing.poll_icon()
-    runs = sorted(ing.icon_runs)
-    assert len(runs) == 2
+    ing.poll_once()                              # rain 11:50 gridded
+    assert 'rain' in indexed and not [k for k in indexed if 'forecast' in k]
+    ing.poll_icon()                              # 06 + 09 UTC runs load
     assert ing.icon_source.vars == {'qc', 'qi', 'qs', 'qg', 'qr', 'clc',
                                     'u', 'v'}
-    newest = runs[-1]
+    newest = max(ing.icon_runs)
     key = f'forecast_rain/{newest:%Y%m%dT%HZ}'
     stamps = [ts for ts, _ in indexed[key]]
-    assert stamps == [newest + datetime.timedelta(hours=h) for h in (1, 2)]
+    # 09 UTC run covers 10:00–12:00: 11:55 and 12:00 lie inside, 12:05 not
+    assert stamps == [CYCLE + k * CYCLE_LEN for k in (1, 2)]
     rain = ing.store.open(key, stamps[0])
-    assert rain.shape == (L, H, W) and rain[4, 10, 10] == 152    # 1 g/m³
+    assert rain.shape == (L, H, W) and rain[4, 10, 10] == 152
     assert (ing.store.root / f'forecast_clouds/{newest:%Y%m%dT%HZ}').is_dir()
-    assert (ing.store.root / f'forecast_flow/{newest:%Y%m%dT%HZ}').is_dir()
-    # the older run's frames were dropped once the newer run was written
-    old_dir = ing.store.root / f'forecast_rain/{runs[0]:%Y%m%dT%HZ}'
-    assert not old_dir.exists()
+    # the older run's frames were dropped; a second poll writes nothing new
+    older = min(ing.icon_runs)
+    assert not (ing.store.root / f'forecast_rain/{older:%Y%m%dT%HZ}').exists()
+    assert ing.write_forecast(CYCLE) == 0
+    # the next observed cycle: 12:00 exists, 12:05 is beyond the run
+    assert ing.write_forecast(CYCLE + CYCLE_LEN) == 0
 
 
 def test_disk_floor_stops_downloads(ingest):

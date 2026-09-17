@@ -911,11 +911,11 @@ async def radar3d_forecast(
     q: Annotated[Radar3DBBoxParams, Query()],
 ):
     """
-    One hourly forecast frame of an ICON-D2 run, cropped to `bbox`, as a
-    `NANO3D` binary on the 2 km cloud grid: `rain` is one channel with the
-    observed rain encoding (`dBZ = v × 0.5 − 32`) derived from the model's
-    precipitation water via a Z–M relation; `clouds` is the two-channel
-    cloud frame. Both carry the flow block (model wind of that hour, in
+    One 5-minute forecast frame synthesised from an ICON-D2 run, cropped to
+    `bbox`, as a `NANO3D` binary on the 2 km cloud grid: `rain` is one
+    channel with the observed rain encoding (`dBZ = v × 0.5 − 32`) derived
+    from the model's precipitation water via a Z–M relation; `clouds` is
+    the two-channel cloud frame. Both carry the flow block (model wind, in
     cloud-grid cells per 5 minutes). Use the URLs from the manifest's
     `forecast` block.
     """

@@ -1105,7 +1105,7 @@ class Radar3DCellsResponse(ResponseModel):
 class Radar3DForecastFrame(ResponseModel):
     timestamp: datetime.datetime = Field(
         examples=["2026-09-17T19:00:00+00:00"])
-    lead_h: int = Field(description="Hours since the run's initialisation", examples=[4])  # noqa
+    lead_min: int = Field(description="Minutes after the newest observed frame", examples=[15])  # noqa
     rain: str = Field(examples=["/radar3d/forecast/rain/20260917T15Z/2026-09-17T19:00:00Z?bbox=52.3,52.7,13.1,13.7"])  # noqa
     clouds: str = Field(examples=["/radar3d/forecast/clouds/20260917T15Z/2026-09-17T19:00:00Z?bbox=52.3,52.7,13.1,13.7"])  # noqa
     cells: str = Field(default=None, json_schema_extra={'nullable': True})
@@ -1123,7 +1123,7 @@ class Radar3DForecast(ResponseModel):
 class Radar3DResponse(ResponseModel):
     forecast: Radar3DForecast = Field(
         default=None,
-        description="Hourly forecast frames past the observed timeline; absent when no model run is loaded",  # noqa
+        description="5-minute forecast frames for the next hour past the observed timeline, synthesised from the newest ICON-D2 run like the observed cloud frames; absent when no run is loaded",  # noqa
         json_schema_extra={'nullable': True},
     )
     flows_forecast: bool = Field(

@@ -84,9 +84,10 @@ class CloudModel:
     def cells_per_second(self, fu, fv):
         return fu / self.cell_x, -fv / self.cell_y        # +y is south
 
-    def frame_at(self, ts):
-        """→ (rg uint8 [L, H, W, 2], flow float32 [H, W, 2] in cells per
-        5 minutes). Raises LookupError outside the loaded steps."""
+    def _blend(self, ts, names):
+        """Fields `names` of the bracketing steps pulled along the flow to
+        `ts` and blended (semi-Lagrangian) → dict name → float32 [L, H, W],
+        plus the flow in cells per 5 minutes."""
         lo, hi = self.bracket(ts)
         if lo is None or hi is None:
             raise LookupError(
@@ -98,37 +99,35 @@ class CloudModel:
         fu = s_lo.fu * (1 - w) + s_hi.fu * w
         fv = s_lo.fv * (1 - w) + s_hi.fv * w
         cx, cy = self.cells_per_second(fu, fv)
-        if hi == lo:
-            lwc = s_lo.lwc.astype(np.float32)
-            cov = s_lo.cov.astype(np.float32)
-        else:
-            s0 = (ts - lo).total_seconds()
-            s1 = (hi - ts).total_seconds()
-            f32 = np.float32
-            lwc0, lwc1 = s_lo.lwc.astype(f32), s_hi.lwc.astype(f32)
-            cov0, cov1 = s_lo.cov.astype(f32), s_hi.cov.astype(f32)
-            lwc = (warp(lwc0, cx * s0, cy * s0) * (1 - w)
-                   + warp(lwc1, -cx * s1, -cy * s1) * w)
-            cov = (warp(cov0, cx * s0, cy * s0) * (1 - w)
-                   + warp(cov1, -cx * s1, -cy * s1) * w)
+        out = {}
+        for name in names:
+            a, b = getattr(s_lo, name), getattr(s_hi, name)
+            if a is None or b is None:
+                raise LookupError(f'Step lacks {name}')
+            a, b = a.astype(np.float32), b.astype(np.float32)
+            if hi == lo:
+                out[name] = a
+            else:
+                s0 = (ts - lo).total_seconds()
+                s1 = (hi - ts).total_seconds()
+                out[name] = (warp(a, cx * s0, cy * s0) * (1 - w)
+                             + warp(b, -cx * s1, -cy * s1) * w)
         flow = np.stack([cx * FRAME_SECONDS, cy * FRAME_SECONDS], axis=-1)
-        return quantise(lwc, cov), flow.astype(np.float32)
+        return out, flow.astype(np.float32)
 
+    def frame_at(self, ts):
+        """→ (rg uint8 [L, H, W, 2], flow float32 [H, W, 2] in cells per
+        5 minutes). Raises LookupError outside the loaded steps."""
+        fields, flow = self._blend(ts, ('lwc', 'cov'))
+        return quantise(fields['lwc'], fields['cov']), flow
 
-def _forecast_at_impl(self, ts):
-    """Forecast frame at an exact model step → (rain uint8 [L, H, W]
-    (dBZ encoding via Z–M), rg uint8 [L, H, W, 2], flow [H, W, 2])."""
-    step = self.steps.get(ts)
-    if step is None or step.pwc is None:
-        raise LookupError(f'No forecast step at {ts:%Y-%m-%dT%H:%MZ}')
-    rain = pwc_to_dbz_bytes(step.pwc)
-    rg = quantise(step.lwc.astype(np.float32), step.cov.astype(np.float32))
-    cx, cy = self.cells_per_second(step.fu, step.fv)
-    flow = np.stack([cx * FRAME_SECONDS, cy * FRAME_SECONDS], axis=-1)
-    return rain, rg, flow.astype(np.float32)
-
-
-CloudModel.forecast_at = _forecast_at_impl
+    def forecast_frame_at(self, ts):
+        """Forecast frame at any stamp, synthesised like the observed cloud
+        frames → (rain uint8 [L, H, W] via Z–M, rg uint8 [L, H, W, 2],
+        flow [H, W, 2])."""
+        fields, flow = self._blend(ts, ('lwc', 'cov', 'pwc'))
+        rain = pwc_to_dbz_bytes(fields['pwc'])
+        return rain, quantise(fields['lwc'], fields['cov']), flow
 
 
 def flow_block(flow, crop, factor=FLOW_FACTOR):
