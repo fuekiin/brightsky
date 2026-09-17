@@ -12,6 +12,7 @@ dependencies = [
   "click",
   "coloredlogs",
   "dwdparse[all]",
+  "eccodes",  # nano radar3d: ICON-D2 GRIB2
   "falcon>=3",
   "fastapi",
   "gunicorn",

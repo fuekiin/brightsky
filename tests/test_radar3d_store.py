@@ -38,3 +38,22 @@ def test_delete_before(tmp_path):
     assert store.delete_before('rain', TS - datetime.timedelta(hours=3)) \
         == [old]
     assert store.timestamps('rain') == [TS]
+
+
+def test_json_products_and_multichannel_arrays(tmp_path):
+    store = FrameStore(tmp_path)
+    rg = np.zeros((24, 10, 8, 2), np.uint8)
+    rg[3, 4, 5, 1] = 7
+    store.write('clouds', TS, rg)
+    assert store.crop('clouds', TS, Crop(4, 6, 5, 7)).shape == (24, 2, 2, 2)
+    flow = np.ones((10, 8, 2), np.float32)
+    store.write('clouds_flow', TS, flow, dtype=np.float32)
+    assert store.open('clouds_flow', TS).dtype == np.float32
+    store.write_json('cells', TS, {'cells': [{'id': 1}]})
+    assert store.read_json('cells', TS) == {'cells': [{'id': 1}]}
+    assert store.timestamps('cells') == [TS]
+    with pytest.raises(FrameMissing):
+        store.read_json('cells', TS + datetime.timedelta(minutes=5))
+    assert store.delete_before('cells', TS + datetime.timedelta(minutes=1)) \
+        == [TS]
+    assert store.timestamps('cells') == []

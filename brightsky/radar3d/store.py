@@ -5,6 +5,7 @@ Files are memory-mapped when served, so a viewport crop is a slice the OS
 page cache serves. Postgres (`radar3d_frames`) only keeps the index.
 """
 import datetime
+import json
 import os
 from pathlib import Path
 
@@ -26,14 +27,31 @@ class FrameStore:
     def path(self, product, ts):
         return self.root / product / f'{ts:{TS_FORMAT}}.npy'
 
-    def write(self, product, ts, voxels):
+    def write(self, product, ts, array, dtype=np.uint8):
         path = self.path(product, ts)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + '.tmp')
         with open(tmp, 'wb') as f:
-            np.save(f, np.ascontiguousarray(voxels, dtype=np.uint8))
+            np.save(f, np.ascontiguousarray(array, dtype=dtype))
         os.replace(tmp, path)
         return path
+
+    def json_path(self, product, ts):
+        return self.root / product / f'{ts:{TS_FORMAT}}.json'
+
+    def write_json(self, product, ts, data):
+        path = self.json_path(product, ts)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + '.tmp')
+        tmp.write_text(json.dumps(data, separators=(',', ':')))
+        os.replace(tmp, path)
+        return path
+
+    def read_json(self, product, ts):
+        path = self.json_path(product, ts)
+        if not path.is_file():
+            raise FrameMissing(f'No {product} data for {ts:%Y-%m-%dT%H:%MZ}')
+        return json.loads(path.read_text())
 
     def open(self, product, ts):
         path = self.path(product, ts)
@@ -52,13 +70,15 @@ class FrameStore:
         return sub
 
     def timestamps(self, product):
-        out = []
-        for path in (self.root / product).glob('*.npy'):
+        out = set()
+        for path in (self.root / product).glob('*.*'):
+            if path.suffix not in ('.npy', '.json'):
+                continue
             try:
                 ts = datetime.datetime.strptime(path.stem, TS_FORMAT)
             except ValueError:
                 continue
-            out.append(ts.replace(tzinfo=datetime.UTC))
+            out.add(ts.replace(tzinfo=datetime.UTC))
         return sorted(out)
 
     def delete_before(self, product, cutoff):
@@ -66,6 +86,7 @@ class FrameStore:
         for ts in self.timestamps(product):
             if ts < cutoff:
                 self.path(product, ts).unlink(missing_ok=True)
+                self.json_path(product, ts).unlink(missing_ok=True)
                 deleted.append(ts)
         return deleted
 
