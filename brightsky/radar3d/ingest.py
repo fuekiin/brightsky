@@ -61,6 +61,13 @@ TILTS_PER_SITE = 10
 CYCLE_DIR_FORMAT = '%Y%m%dT%H%MZ'
 CYCLE = datetime.timedelta(minutes=5)
 PRODUCTS = ('rain', 'clouds', 'clouds_flow', 'cells')
+FORECAST_PRODUCTS = ('forecast_rain', 'forecast_clouds', 'forecast_flow')
+RUN_FORMAT = '%Y%m%dT%HZ'
+
+
+def forecast_product(product, run):
+    """Forecast frames are keyed by run: product 'forecast_rain/<run>'."""
+    return f'{product}/{run:{RUN_FORMAT}}'
 # Predicted sweep fetches: start this long after the learned time, give up
 # (and take a listing) this long after it
 PREDICT_AFTER = 20
@@ -204,6 +211,7 @@ class Radar3DIngest:
             retention_hours=settings.RADAR3D_RETENTION_HOURS,
             listing_interval=settings.RADAR3D_LISTING_INTERVAL,
             icon_steps=settings.RADAR3D_ICON_STEPS,
+            forecast_hours=settings.RADAR3D_FORECAST_HOURS,
         )
         self.geometries = {}
         self.done = set()
@@ -219,6 +227,7 @@ class Radar3DIngest:
         self.sampler = Sampler(cloud_grid)
         self.full_h = None
         self.icon_loaded = set()
+        self.icon_runs = {}          # run → [valid times loaded]
         self.icon_attempts = Counter()
         # cells
         self.cells_done = set()
@@ -556,6 +565,7 @@ class Radar3DIngest:
             try:
                 if self.load_run(run):
                     self.backfill_clouds()
+                    self.write_forecast(run)
             except Exception:
                 logger.exception('ICON-D2 run %s failed', run)
         with self.clouds_lock:
@@ -602,6 +612,7 @@ class Radar3DIngest:
         with self.clouds_lock:
             self.clouds.add_run(steps)
         self.icon_loaded.add(run)
+        self.icon_runs[run] = [s.valid_time for s in steps]
         shutil.rmtree(run_dir, ignore_errors=True)
         logger.info(
             'ICON-D2 %s loaded: %d steps (%d + %d levels) in %.0fs',
@@ -618,6 +629,57 @@ class Radar3DIngest:
         self.store.write('clouds_flow', ts, flow, dtype=np.float32)
         self.index('clouds', ts, path, None)
         return True
+
+    # -- forecast ----------------------------------------------------
+
+    def write_forecast(self, run):
+        """Hourly forecast frames of a run (rain via Z–M, clouds, flow),
+        products keyed by run so a new run never overwrites a served frame.
+        Frames older than the run's first hour are skipped; the manifest
+        decides which ones lie past the observed timeline."""
+        written = 0
+        for ts in self.icon_runs.get(run, []):
+            if ts <= run or ts > run + datetime.timedelta(
+                    hours=self.settings['forecast_hours']):
+                continue
+            with self.clouds_lock:
+                try:
+                    rain, rg, flow = self.clouds.forecast_at(ts)
+                except LookupError:
+                    continue
+            rain_key = forecast_product('forecast_rain', run)
+            rain_path = self.store.write(rain_key, ts, rain)
+            self.store.write(forecast_product('forecast_clouds', run), ts, rg)
+            self.store.write(forecast_product('forecast_flow', run), ts, flow,
+                             dtype=np.float32)
+            self.index(rain_key, ts, rain_path, None)
+            written += 1
+        logger.info('Wrote %d forecast frames for run %s', written, run)
+        self.clean_forecasts(keep=run)
+
+    def clean_forecasts(self, keep):
+        """Drop every forecast run but the newest one and `keep`."""
+        runs = set()
+        for product in FORECAST_PRODUCTS:
+            base = self.store.root / product
+            if base.is_dir():
+                for path in base.iterdir():
+                    try:
+                        run = datetime.datetime.strptime(path.name, RUN_FORMAT)
+                    except ValueError:
+                        continue
+                    runs.add(run.replace(tzinfo=datetime.UTC))
+        keepers = {keep, max(runs)} if runs else {keep}
+        for run in runs - keepers:
+            for product in FORECAST_PRODUCTS:
+                run_dir = self.store.root / product / f'{run:{RUN_FORMAT}}'
+                shutil.rmtree(run_dir, ignore_errors=True)
+            if self.index == self._index_db:
+                with get_connection() as conn:
+                    delete_index_before(
+                        conn, forecast_product('forecast_rain', run),
+                        datetime.datetime.max.replace(tzinfo=datetime.UTC))
+            logger.info('Dropped forecast run %s', run)
 
     def backfill_clouds(self):
         now, since = self.window()

@@ -88,3 +88,15 @@ def test_column_flow_weights_by_water():
     lwc[20] = 1.0
     fu, fv = column_flow(lwc, cov, u, v, slab_h)
     assert fu[0, 0] == pytest.approx(20.0, abs=1e-3)
+
+
+def test_pwc_to_dbz_bytes_follows_z_m():
+    from brightsky.radar3d.icon import pwc_to_dbz_bytes
+    m = np.array([[[0.0, 0.005, 0.1, 1.0, 3.0, 1000.0]]], np.float32)
+    v = pwc_to_dbz_bytes(m)[0, 0]
+    dbz = v.astype(float) * 0.5 - 32.0
+    assert v[0] == 0 and v[1] == 0                      # below the floor
+    assert dbz[2] == pytest.approx(25.6, abs=0.5)
+    assert dbz[3] == pytest.approx(43.8, abs=0.5)
+    assert dbz[4] == pytest.approx(52.5, abs=0.5)
+    assert v[5] == 255                                  # clipped

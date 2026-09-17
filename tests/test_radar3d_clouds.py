@@ -83,3 +83,21 @@ def test_flow_block_layout():
     assert len(data) == 4 + 3 * 5 * 2 * 2
     assert np.allclose(vectors[..., 0], 1.5)
     assert np.allclose(vectors[..., 1], -0.25)
+
+
+def test_forecast_at_exact_step(model):
+    with pytest.raises(LookupError):
+        model.frame_at  # model fixture steps carry no pwc yet
+        model.forecast_at(T0)
+    L, H, W = model.grid.shape
+    step = model.steps[T0]
+    pwc = np.zeros((L, H, W), np.float32)
+    pwc[3, 2, 2] = 1.0
+    step.pwc = pwc.astype(np.float16)
+    rain, rg, flow = model.forecast_at(T0)
+    assert rain.shape == (L, H, W) and rain[3, 2, 2] == 152    # ≈ 44 dBZ
+    assert (rain > 0).sum() == 1
+    assert rg.shape == (L, H, W, 2) and rg[5, 6, 4, 0] == 100
+    assert flow[0, 0].tolist() == pytest.approx([1.0, 0.0], abs=1e-3)
+    with pytest.raises(LookupError):
+        model.forecast_at(T0 + datetime.timedelta(minutes=30))

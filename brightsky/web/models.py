@@ -1102,7 +1102,32 @@ class Radar3DCellsResponse(ResponseModel):
     source: str
 
 
+class Radar3DForecastFrame(ResponseModel):
+    timestamp: datetime.datetime = Field(
+        examples=["2026-09-17T19:00:00+00:00"])
+    lead_h: int = Field(description="Hours since the run's initialisation", examples=[4])  # noqa
+    rain: str = Field(examples=["/radar3d/forecast/rain/20260917T15Z/2026-09-17T19:00:00Z?bbox=52.3,52.7,13.1,13.7"])  # noqa
+    clouds: str = Field(examples=["/radar3d/forecast/clouds/20260917T15Z/2026-09-17T19:00:00Z?bbox=52.3,52.7,13.1,13.7"])  # noqa
+    cells: str = Field(default=None, json_schema_extra={'nullable': True})
+
+
+class Radar3DForecast(ResponseModel):
+    run: datetime.datetime = Field(
+        description="ICON-D2 run the frames come from",
+        examples=["2026-09-17T15:00:00+00:00"])
+    grid: Radar3DGrid = Field(
+        description="2 km grid with the same bounds as `grid_clouds`; rain encoding is dBZ derived from the model's precipitation water")  # noqa
+    frames: list[Radar3DForecastFrame]
+
+
 class Radar3DResponse(ResponseModel):
+    forecast: Radar3DForecast = Field(
+        default=None,
+        description="Hourly forecast frames past the observed timeline; absent when no model run is loaded",  # noqa
+        json_schema_extra={'nullable': True},
+    )
+    flows_forecast: bool = Field(
+        description="Whether a forecast block with flow fields is present")
     grid: Radar3DGrid
     grid_clouds: Radar3DCloudsGrid = Field(
         description="The cloud frames' grid: same bounds as `grid`, 2 km cells, two channels",  # noqa

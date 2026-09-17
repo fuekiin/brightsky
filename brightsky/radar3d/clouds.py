@@ -13,7 +13,7 @@ import struct
 
 import numpy as np
 
-from brightsky.radar3d.icon import cell_metres
+from brightsky.radar3d.icon import cell_metres, pwc_to_dbz_bytes
 
 
 FRAME_SECONDS = 300.0
@@ -113,6 +113,22 @@ class CloudModel:
                    + warp(cov1, -cx * s1, -cy * s1) * w)
         flow = np.stack([cx * FRAME_SECONDS, cy * FRAME_SECONDS], axis=-1)
         return quantise(lwc, cov), flow.astype(np.float32)
+
+
+def _forecast_at_impl(self, ts):
+    """Forecast frame at an exact model step → (rain uint8 [L, H, W]
+    (dBZ encoding via Z–M), rg uint8 [L, H, W, 2], flow [H, W, 2])."""
+    step = self.steps.get(ts)
+    if step is None or step.pwc is None:
+        raise LookupError(f'No forecast step at {ts:%Y-%m-%dT%H:%MZ}')
+    rain = pwc_to_dbz_bytes(step.pwc)
+    rg = quantise(step.lwc.astype(np.float32), step.cov.astype(np.float32))
+    cx, cy = self.cells_per_second(step.fu, step.fv)
+    flow = np.stack([cx * FRAME_SECONDS, cy * FRAME_SECONDS], axis=-1)
+    return rain, rg, flow.astype(np.float32)
+
+
+CloudModel.forecast_at = _forecast_at_impl
 
 
 def flow_block(flow, crop, factor=FLOW_FACTOR):

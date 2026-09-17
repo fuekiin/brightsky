@@ -1246,3 +1246,73 @@ def test_radar3d_cells_endpoint(radar3d_all_products, api):
     assert api.get(
         '/radar3d/cells/2026-09-16T12:05:00Z?bbox=52,53,13,14').status_code \
         == 404
+
+
+@pytest.fixture
+def radar3d_forecast(radar3d_all_products, db):
+    from brightsky.radar3d.grid import GERMANY_2KM
+    store = radar3d_all_products
+    run = datetime.datetime(2026, 9, 16, 9, tzinfo=tzutc())
+    key = f'{run:%Y%m%dT%HZ}'
+    L, H, W = GERMANY_2KM.shape
+    crop = GERMANY_2KM.around(52.52, 13.41, 5000)
+    for lead in (1, 2, 3, 4):
+        ts = run + datetime.timedelta(hours=lead)
+        rain = np.zeros((L, H, W), np.uint8)
+        rain[5, crop.row0:crop.row1, crop.col0:crop.col1] = 100 + lead
+        rg = np.zeros((L, H, W, 2), np.uint8)
+        rg[6, crop.row0:crop.row1, crop.col0:crop.col1, 1] = 62
+        flow = np.zeros((H, W, 2), np.float32)
+        flow[..., 0] = 0.5
+        index_frame(db.conn, f'forecast_rain/{key}', ts,
+                    store.write(f'forecast_rain/{key}', ts, rain), None)
+        store.write(f'forecast_clouds/{key}', ts, rg)
+        store.write(f'forecast_flow/{key}', ts, flow, dtype=np.float32)
+    return store
+
+
+def test_radar3d_manifest_forecast_block(radar3d_forecast, api):
+    data = api.get('/radar3d?lat=52.52&lon=13.41&distance=20000').json()
+    fc = data['forecast']
+    assert data['flows_forecast'] is True
+    assert fc['run'] == '2026-09-16T09:00:00+00:00'
+    # newest observed frame is 12:10 → forecast starts after it
+    assert [(f['timestamp'][11:16], f['lead_h']) for f in fc['frames']] == \
+        [('13:00', 4)]
+    f = fc['frames'][0]
+    assert f['rain'].startswith(
+        '/radar3d/forecast/rain/20260916T09Z/2026-09-16T13:00:00Z?bbox=')
+    assert f['clouds'].startswith('/radar3d/forecast/clouds/20260916T09Z/')
+    assert f['cells'] is None
+    g, gc = fc['grid'], data['grid_clouds']
+    assert (g['width'], g['height'], g['min_lat']) == \
+        (gc['width'], gc['height'], gc['min_lat'])
+    assert g['encoding']['unit'] == 'dBZ' and 'Z-M' in g['encoding']['derived']
+    assert g['channels'] == 1 and g['resolution'] == 2000
+
+
+def test_radar3d_manifest_without_forecast(radar3d_all_products, api):
+    data = api.get('/radar3d?lat=52.52&lon=13.41&distance=20000').json()
+    assert 'forecast' not in data and data['flows_forecast'] is False
+
+
+def test_radar3d_forecast_frames(radar3d_forecast, api):
+    from brightsky.radar3d.clouds import parse_flow_block
+    data = api.get('/radar3d?lat=52.52&lon=13.41&distance=20000').json()
+    f = data['forecast']['frames'][0]
+    resp = api.get(f['rain'])
+    assert resp.status_code == 200 and 'immutable' in resp.headers['cache-control']  # noqa
+    header, voxels, extra = radar3d_frame.decode(resp.content)
+    assert header['channels'] == 1 and voxels[5].max() == 104
+    fw, fh, vectors = parse_flow_block(extra)
+    assert np.allclose(vectors[..., 0], 0.5)
+    header2, voxels2, extra2 = radar3d_frame.decode(
+        api.get(f['clouds']).content)
+    assert header2['channels'] == 2 and voxels2[6, :, :, 1].max() == 62
+    assert len(extra2) == len(extra)
+    assert api.get('/radar3d/forecast/rain/20260916T09Z/2026-09-16T20:00:00Z'
+                   '?bbox=52,53,13,14').status_code == 404
+    assert api.get('/radar3d/forecast/snow/20260916T09Z/2026-09-16T13:00:00Z'
+                   '?bbox=52,53,13,14').status_code == 422
+    assert api.get('/radar3d/forecast/rain/yesterday/2026-09-16T13:00:00Z'
+                   '?bbox=52,53,13,14').status_code == 422

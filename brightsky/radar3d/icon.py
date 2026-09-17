@@ -18,7 +18,12 @@ import numpy as np
 
 
 HALF_LEVELS = 66
-Q_VARS = ('qc', 'qi', 'qs', 'qg')
+Q_VARS = ('qc', 'qi', 'qs', 'qg')        # condensed water: the cloud body
+P_VARS = ('qr', 'qs', 'qg')              # precipitation water: forecast rain
+# Z–M relation for precipitation water content M (g/m³) → reflectivity:
+# Z = 2.4e4 · M^1.82 (mm⁶/m³), i.e. 0.1 g/m³ ≈ 20 dBZ, 1 ≈ 44, 3 ≈ 53.
+ZM_A, ZM_B = 2.4e4, 1.82
+PWC_FLOOR = 0.01                         # g/m³ below which there is no echo
 
 
 def grib_name(run, step, level, var):
@@ -154,14 +159,27 @@ def to_slabs(field, heights, slab_h):
 
 @dataclass
 class StepFields:
-    """One model step on the cloud grid: water (g/m³) and cover (%) on the
-    slabs, and the column flow (m/s, east/north)."""
+    """One model step on the cloud grid: condensed water (g/m³) and cover
+    (%) on the slabs, the column flow (m/s, east/north), and the
+    precipitation water (g/m³) for the forecast rain."""
 
     valid_time: object
     lwc: np.ndarray        # [L, H, W] float16
     cov: np.ndarray        # [L, H, W] float16
     fu: np.ndarray         # [H, W] float32
     fv: np.ndarray         # [H, W] float32
+    pwc: np.ndarray = None  # [L, H, W] float16, None for old-style steps
+
+
+def pwc_to_dbz_bytes(pwc):
+    """Precipitation water (g/m³) → the rain frames' byte encoding
+    (dBZ = v × 0.5 − 32, 0 = no echo) via the Z–M relation."""
+    m = np.asarray(pwc, dtype=np.float32)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        dbz = 10.0 * np.log10(ZM_A * np.power(np.maximum(m, 1e-6), ZM_B))
+    out = np.clip(np.round((dbz + 32.0) * 2.0), 1, 255).astype(np.uint8)
+    out[m < PWC_FLOOR] = 0
+    return out
 
 
 def column_flow(lwc, cov, u, v, slab_h):
@@ -191,12 +209,13 @@ def load_step(run_dir, run, step, sampler, full_h, q_levels, w_levels,
 
     h_q = full_h[[k - 1 for k in q_levels]]
     h_w = full_h[[k - 1 for k in w_levels]]
-    q = None
-    for var in Q_VARS:
-        part = stack(var, q_levels)
-        q = part if q is None else q + part
+    fields = {var: stack(var, q_levels) for var in set(Q_VARS) | set(P_VARS)}
     rho = 1.225 * np.exp(-np.clip(h_q, 0, None) / 8500.0)
+    q = sum(fields[var] for var in Q_VARS)
     lwc = to_slabs(q * rho * 1000.0, h_q, slab_h)
+    pw = sum(fields[var] for var in P_VARS)
+    pwc = to_slabs(pw * rho * 1000.0, h_q, slab_h)
+    del fields
     cov = to_slabs(stack('clc', q_levels), h_q, slab_h)
     u = to_slabs(stack('u', w_levels), h_w, slab_h)
     v = to_slabs(stack('v', w_levels), h_w, slab_h)
@@ -204,7 +223,7 @@ def load_step(run_dir, run, step, sampler, full_h, q_levels, w_levels,
     return StepFields(
         valid_time=run + datetime.timedelta(hours=step),
         lwc=lwc.astype(np.float16), cov=cov.astype(np.float16),
-        fu=fu, fv=fv,
+        fu=fu, fv=fv, pwc=pwc.astype(np.float16),
     )
 
 

@@ -2,7 +2,7 @@ import base64
 import contextlib
 import datetime
 from pathlib import Path
-from typing import Any, Annotated
+from typing import Any, Annotated, Literal
 
 import asyncpg
 import orjson
@@ -791,6 +791,32 @@ def _clouds_crop_bytes(timestamp, bbox):
     return frame.encode(voxels, channels=2, extra=flow_block(flow, crop))
 
 
+def _parse_run(value):
+    try:
+        run = datetime.datetime.strptime(value, '%Y%m%dT%HZ')
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid run stamp")
+    return run.replace(tzinfo=datetime.UTC)
+
+
+def _forecast_crop_bytes(product, run, timestamp, bbox):
+    from brightsky.radar3d import frame
+    from brightsky.radar3d.clouds import flow_block
+    from brightsky.radar3d.grid import GERMANY_2KM, OutsideGrid
+    from brightsky.radar3d.store import FrameMissing, FrameStore
+    store = FrameStore(settings.RADAR3D_DATA_DIR)
+    key = f'{run:%Y%m%dT%HZ}'
+    try:
+        crop = GERMANY_2KM.crop(*bbox)
+        voxels = store.crop(f'forecast_{product}/{key}', timestamp, crop)
+        flow = store.open(f'forecast_flow/{key}', timestamp)
+    except (OutsideGrid, FrameMissing) as e:
+        raise query.NoData(str(e))
+    channels = 2 if product == 'clouds' else 1
+    return frame.encode(voxels, channels=channels,
+                        extra=flow_block(flow, crop))
+
+
 def _cells_json(timestamp, bbox):
     from brightsky.radar3d.cells import SOURCE, cells_in_bbox
     from brightsky.radar3d.store import FrameMissing, FrameStore
@@ -864,6 +890,43 @@ async def radar3d_clouds(
     if not await query.radar3d_frame_exists(ctx['pool'], 'clouds', ts):
         raise query.NoData(f"No cloud frame for {timestamp}")
     data = await run_in_threadpool(_clouds_crop_bytes, ts, q.bbox)
+    return Response(
+        content=data,
+        media_type='application/octet-stream',
+        headers=_FRAME_HEADERS,
+    )
+
+
+@app.get(
+    '/radar3d/forecast/{product}/{run}/{timestamp}',
+    operation_id='getRadar3DForecast',
+    summary='Radar 3D forecast frame (nano)',
+    responses=common_responses,
+    response_class=Response,
+)
+async def radar3d_forecast(
+    product: Literal['rain', 'clouds'],
+    run: str,
+    timestamp: str,
+    q: Annotated[Radar3DBBoxParams, Query()],
+):
+    """
+    One hourly forecast frame of an ICON-D2 run, cropped to `bbox`, as a
+    `NANO3D` binary on the 2 km cloud grid: `rain` is one channel with the
+    observed rain encoding (`dBZ = v × 0.5 − 32`) derived from the model's
+    precipitation water via a Z–M relation; `clouds` is the two-channel
+    cloud frame. Both carry the flow block (model wind of that hour, in
+    cloud-grid cells per 5 minutes). Use the URLs from the manifest's
+    `forecast` block.
+    """
+    run_ts = _parse_run(run)
+    ts = _parse_frame_timestamp(timestamp)
+    exists = await query.radar3d_frame_exists(
+        ctx['pool'], f'forecast_rain/{run}', ts)
+    if not exists:
+        raise query.NoData(f"No forecast frame {run}/{timestamp}")
+    data = await run_in_threadpool(
+        _forecast_crop_bytes, product, run_ts, ts, q.bbox)
     return Response(
         content=data,
         media_type='application/octet-stream',

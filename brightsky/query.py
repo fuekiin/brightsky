@@ -1009,7 +1009,12 @@ async def radar3d(
                 f'/radar3d/cells/{stamp}{bbox}'
                 if 'cells' in products else None),
         })
+    forecast = await _radar3d_forecast(
+        conn, grid, crop, bounds, bbox,
+        frames[-1]['timestamp'] if frames else None)
     return {
+        **({'forecast': forecast} if forecast else {}),
+        'flows_forecast': bool(forecast),
         'grid': {
             'width': crop.width // scale,
             'height': crop.height // scale,
@@ -1036,6 +1041,60 @@ async def radar3d(
         'frames': frames,
         'flows_clouds': any(f['clouds'] for f in frames),
         'source': RADAR3D_SOURCE,
+    }
+
+
+RADAR3D_FORECAST_ENCODING = {
+    'scale': 0.5, 'offset': -32.0, 'nodata': 0, 'unit': 'dBZ',
+    'derived': 'Z-M from ICON-D2 qr+qs+qg (Z = 2.4e4 M^1.82)'}
+
+
+async def _radar3d_forecast(conn, grid, crop, bounds, bbox, newest_observed):
+    """The newest loaded ICON-D2 run's hourly frames past the observed
+    timeline, or None when no run is loaded."""
+    rows = await conn.fetch(
+        """
+        SELECT product, timestamp FROM radar3d_frames
+        WHERE product LIKE 'forecast_rain/%'
+        ORDER BY product DESC, timestamp
+        """)
+    if not rows:
+        return None
+    newest_key = rows[0]['product']
+    run_stamp = newest_key.split('/', 1)[1]
+    run = datetime.datetime.strptime(run_stamp, '%Y%m%dT%HZ').replace(
+        tzinfo=datetime.UTC)
+    frames = []
+    for row in rows:
+        if row['product'] != newest_key:
+            continue
+        ts = row['timestamp']
+        if newest_observed is not None and ts <= newest_observed:
+            continue
+        stamp = f'{ts:%Y-%m-%dT%H:%M:%SZ}'
+        frames.append({
+            'timestamp': ts,
+            'lead_h': int((ts - run).total_seconds() // 3600),
+            'rain': f'/radar3d/forecast/rain/{run_stamp}/{stamp}{bbox}',
+            'clouds': f'/radar3d/forecast/clouds/{run_stamp}/{stamp}{bbox}',
+            'cells': None,
+        })
+    if not frames:
+        return None
+    return {
+        'run': run,
+        'grid': {
+            'width': crop.width // 2,
+            'height': crop.height // 2,
+            'levels': grid.levels,
+            'level_m': grid.level_m,
+            'base_m': grid.base_m,
+            **bounds,
+            'encoding': RADAR3D_FORECAST_ENCODING,
+            'channels': 1,
+            'resolution': 2000,
+        },
+        'frames': frames,
     }
 
 
