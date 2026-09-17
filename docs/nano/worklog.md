@@ -292,3 +292,16 @@ rain/clouds/cells fetched concurrently; a `null` cloud entry takes the nearest c
 index matching holds; clouds or cells failing never take the rain down; `flow_w`/`flow_h` are
 read from the block and the vectors used as cloud-grid cells per 5 min. Deployment decision
 is with the owner.
+
+## 2026-09-18 — radar3d deployed to api.nano-wetter.de
+
+**Done** (`bright_sky_config` `docs/deploy-2026-09-18-radar3d.md`; server state + ledger, no
+fork code changes): `nano-radar3d` fast-forwarded into `nano-health` (`59a3173`, tag `nano-v3`),
+`nano CI` green on Linux with `eccodes`, image `sha-59a3173` pulled; `brightsky.yml` gained the
+`.data/radar3d` bind mount and the `radar3d` service; `worker`/`web` recreated, `radar3d`
+created; migration 21 applied; first cycle gridded on the prod box in 23.9 s (17 sites, during
+the backfill); `/radar3d` public. The server's GHCR login had silently died since July (every
+tag denied) — the owner re-issued the token; check `docker manifest inspect` before the next
+deploy. Monitoring: `nano-tooling` `brightsky/radar3d` (manifest freshness/coverage, no creds)
+and `brightsky/radar3d-worker` (container log digest); baseline in
+`bright_sky_config/docs/pre-deploy-2026-09-18-radar3d.md`.

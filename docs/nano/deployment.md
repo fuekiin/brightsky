@@ -51,7 +51,11 @@ Build pipeline yes, auto-deploy no:
   up -d`), optionally later a `workflow_dispatch` SSH job. Deploy scripts and the tag ledger
   belong in `bright_sky_config`, not in the forks.
 
-## radar3d container (phase 1, not yet deployed)
+## radar3d container
+
+Status 2026-09-18: **deployed.** Production runs `ghcr.io/fuekiin/brightsky:sha-59a3173`
+(`nano-health` tip, tag `nano-v3`) with the third container `brightsky-radar3d-1`; record and
+post-deploy comparison in `bright_sky_config` `docs/deploy-2026-09-18-radar3d.md`.
 
 The 3D radar pipeline (`docs/nano/architecture.md`, "Radar 3D pipeline") ships in the same
 image but runs as its **own container**, so the ingest worker's CPU bursts stay unaffected.
