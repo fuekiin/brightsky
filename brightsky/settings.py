@@ -22,6 +22,18 @@ KEEP_DOWNLOADS = False
 MIN_DATE = datetime.datetime(2010, 1, 1, tzinfo=tzutc())
 MAX_DATE = None
 POLLING_CRONTAB_MINUTE = '*'
+# nano radar3d (docs/nano/architecture.md)
+RADAR3D_BACKFILL_MINUTES = 70
+RADAR3D_CYCLE_TIMEOUT = 420
+RADAR3D_DATA_DIR = '.data/radar3d'
+RADAR3D_POLL_INTERVAL = 60
+RADAR3D_RETENTION_HOURS = 3
+RADAR3D_SITES = [
+    'asb', 'boo', 'drs', 'eis', 'ess', 'fbg', 'fld', 'hnr', 'isn', 'mem',
+    'neu', 'nhb', 'oft', 'pro', 'ros', 'tur', 'umd',
+]
+RADAR3D_SWEEPS_URL = (
+    'https://opendata.dwd.de/weather/radar/sites/sweep_vol_z/')
 BIOWETTER_ZONES_URL = (
     'https://maps.dwd.de/geoserver/wfs'
     '?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature'
