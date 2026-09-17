@@ -73,7 +73,7 @@ def test_choose_and_wind_levels():
     steps = (20000 - 2000 * np.arange(10))[:, None, None]
     full_h = np.zeros((10, 2, 2)) + steps
     assert choose_levels(full_h, top_m=12500) == [4, 5, 6, 7, 8, 9, 10]
-    assert wind_levels(full_h, 1000, 10000, stride=2) == [6, 8]
+    assert wind_levels(full_h, 1000, 10000, stride=2) == [6, 8, 10]
 
 
 def test_column_flow_weights_by_water():
