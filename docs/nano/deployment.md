@@ -73,7 +73,16 @@ services:
     restart: always
 ```
 
-Then `docker compose ... pull && up -d radar3d web`. Expectations on the 4-core / 7.7 GB box:
-~1.3 GB peak RSS for the radar3d container (measured on the dev Mac; per-site geometry ~420 MiB
-in RAM plus per-cycle transients), ~5–13 s CPU per 5-minute cycle, ~17 MB/min of DWD listing traffic, ~600 MB disk. Migration `0021_radar3d.sql` is
-additive. Rollback: `docker compose stop radar3d`, the `/radar3d` routes then answer 404.
+Then `docker compose ... pull && up -d radar3d web`. Expectations on the 4-core / 7.7 GB box
+(all three products, measured on the dev Mac 2026-09-17):
+
+| | |
+|---|---|
+| RAM | rain geometry ~420 MiB + ICON steps (~15 MB each, ≤12 kept) + transients; sites are gridded one at a time. Watch the container's RSS after the first ICON run (`docker stats`). |
+| CPU | rain 3–13 s per 5-min cycle; cloud frame ~0.5 s per cycle; ICON run load ~2.5 min per 3 h (317 GRIB decodes per step × 6 steps); cells negligible |
+| Disk | rain 15.3 MB + clouds 7.6 MB + flow 1.3 MB per 5 min → ~0.9 GB at 3 h retention; raw sweeps/GRIBs transient (≤ ~300 MB during an ICON download) |
+| Traffic | ~1 MB/min sweep listings + ~10 MB per cycle sweeps + ~270 MB per ICON run (every 3 h) + <0.1 MB/min KONRAD3D |
+
+The image needs `eccodes` (pinned in `requirements.txt`; the wheel bundles the C library).
+Migration `0021_radar3d.sql` is additive. Rollback: `docker compose stop radar3d`, the
+`/radar3d` routes then answer 404.

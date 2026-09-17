@@ -45,8 +45,8 @@ The second nano extension: a national 3D reflectivity volume every 5 minutes for
 3D radar view, gridded from the DWD's `sweep_vol_z` volume scans (17 sites × 10 tilts), served
 as viewport crops behind `GET /radar3d` (manifest) and `GET /radar3d/rain/{ts}` (binary frame).
 Own package `brightsky/radar3d/`, own table `radar3d_frames`, own worker container
-(`radar3d-work`). Phase 1 = rain; clouds (ICON-D2) and KONRAD3D cells follow on the same
-manifest. See the "Radar 3D pipeline" section of [architecture.md](architecture.md) and the
+(`radar3d-work`). Rain (phase 1), ICON-D2 clouds and KONRAD3D cells (phases 2–3) all ship on
+the same manifest; only the 500 m detail boxes remain a follow-up. See the "Radar 3D pipeline" section of [architecture.md](architecture.md) and the
 brief in the app repo (`docs/superpowers/specs/2026-09-17-radar-3d-backend-brief.md`).
 
 ## Where things live
