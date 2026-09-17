@@ -232,3 +232,54 @@ Fixtures: `tests/data/radar3d/` (ten isn sweeps of 2026-09-16 11:50 UTC, golden 
 `RADAR3D_POLL_INTERVAL` (60), `RADAR3D_CYCLE_TIMEOUT` (420), `RADAR3D_BACKFILL_MINUTES` (70),
 `RADAR3D_RETENTION_HOURS` (3). CLI: `radar3d-work` (the worker), `radar3d-grid DIR` (grid saved
 sweeps offline).
+
+## Radar 3D pipeline — phase 2/3: clouds and cells (2026-09-17)
+
+Same worker container, two more products on the rain timeline.
+
+### Clouds (`radar3d/icon.py`, `radar3d/clouds.py`)
+
+1. **Runs** — ICON-D2 runs every 3 h; files land ~45–60 min after run time under
+   `weather/nwp/icon-d2/grib/<HH>/<var>/…regular-lat-lon_model-level_<run>_<step>_<level>_<var>`.
+   The worker's ICON thread takes the two newest runs that should exist and downloads steps
+   1..`RADAR3D_ICON_STEPS` (6): `qc qi qs qg clc` for the model levels that reach 12.5 km
+   (`choose_levels` from the cached `hhl` heights → levels 9–65), `u v` for every third level
+   between 1 and 10 km (`wind_levels`). A 404 means "not yet"; the run is retried next minute.
+2. **Fields** — `Sampler` (bilinear, 0.02° grid → the 2 km columns), `to_slabs` (linear in
+   height per column from the terrain-following levels, 0 outside), density
+   `1.225·exp(−h/8500)` → g/m³, `column_flow` → one (u, v) per column. Kept per step as
+   float16 `[24, 456, 349]` water + cover and float32 flow (~15 MB per step).
+3. **Frames** — for a stamp `ts` between steps `lo ≤ ts ≤ hi`: flow interpolated in time,
+   water/cover pulled along the flow from both steps and blended (`warp`, bilinear taps),
+   quantised (water 0.05/0.1 g/m³ steps, ≥0.02; cover 25 % steps, ≥30 %). Written as
+   `clouds/<ts>.npy` `[24, 456, 349, 2]` and `clouds_flow/<ts>.npy` `[456, 349, 2]` (cells
+   per 5 min, x east, y south). Cloud frames exist only for rain stamps: written right after
+   the rain cycle, and back-filled for indexed rain stamps when a run arrives.
+4. **Web** — `/radar3d/clouds/{ts}?bbox=…` crops on `GERMANY_2KM` (the manifest's rain crop is
+   aligned to 2 cells, so the bounds coincide), encodes `channels = 2` and appends the flow
+   block: `u16 flow_w, u16 flow_h`, float16 `(dx, dy)` pairs on a `ceil(w/4) × ceil(h/4)` grid
+   spanning the frame (bilinearly resampled).
+
+### Cells (`radar3d/cells.py`)
+
+`KONRAD3D_<stamp>.xml` (every 5 min, 4 KB quiet … 600 KB on a storm day) → the StormCell JSON,
+field for field as the app repo's `cells_fixture.py` (`-1000000000` → `null`, `#` stripped
+from ids). Stored as `cells/<ts>.json`, indexed with `sites` = cell count, served filtered by
+centroid: `{"timestamp", "cells", "source"}`.
+
+### Worker loops and traffic
+
+`rain` (main thread, 60 s): listings only when a site's schedule is unknown, every 15 min
+(staggered), or once when a predicted file is >120 s overdue; otherwise predicted-name GETs
+(offset ±1 s) from 20 s after the learned time. `icon` (thread, 60 s): run discovery,
+download (6 parallel), load, back-fill. `cells` (thread, 60 s): one 78 KB listing + new XMLs.
+Retention 3 h for all products. Traffic: ~1 MB/min listings + ~10 MB per cycle of sweeps +
+~270 MB per ICON run (every 3 h) + <0.1 MB/min KONRAD.
+
+### Tests
+
+`test_radar3d_icon.py` (GRIB read on a real file, bilinear sampler, `to_slabs` vs `np.interp`,
+level selection, column flow), `test_radar3d_clouds.py` (warp, quantisation, a blob moving
+with the wind, flow block layout), `test_radar3d_cells.py` (golden vs the app fixture),
+`test_radar3d_ingest.py` (schedule learning, predicted fetches, overdue → one listing, cells,
+a synthetic ICON run producing cloud frames), `test_web.py::test_radar3d_*`.

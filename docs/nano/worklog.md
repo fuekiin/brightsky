@@ -235,3 +235,50 @@ block, 4-at-a-time frame fetches checked against the manifest grid; 120 km aroun
 here. **Contract notes for phase 2:** (1) the client matches clouds to rain frames by index, so
 cloud frames must be served on exactly the rain timestamps (a `null` cloud entry when the model
 step is missing, as the brief says); (2) the clouds' flow field goes in the header's extra block.
+
+## 2026-09-17 — radar3d phases 2–3: clouds, cells, and a cheaper worker (branch `nano-radar3d`)
+
+**Done** (plan: `plans/2026-09-17-radar3d-phase2-3.md`; asked for by the app session on the
+owner's behalf, same day as phase 1):
+
+- **Clouds** (`radar3d/icon.py`, `radar3d/clouds.py`): ICON-D2 regular-lat-lon model levels
+  (qc+qi+qs+qg → g/m³, clc → %, u/v → flow) read with `eccodes`, sampled bilinearly onto the
+  2 km cloud grid (`GERMANY_2KM`, the rain grid halved), interpolated in height from the
+  terrain-following levels (`hhl`) onto the 24 slabs (vectorised `to_slabs`, equal to
+  per-column `np.interp`), one 2-D flow per column (water-weighted mean wind, else 3–8 km mean).
+  `CloudModel.frame_at(ts)` blends the bracketing hourly steps semi-Lagrangian (port of the
+  app session's `grid_clouds2.py`) and quantises as the reference does. Served as
+  `/radar3d/clouds/{ts}` (`channels = 2`) with the flow in the frame's extra block.
+- **Cells** (`radar3d/cells.py`): KONRAD3D XML → the StormCell JSON, a 1:1 port of
+  `cells_fixture.py`; golden test against the app session's `cells3d` fixture (three cells of
+  2026-09-16 11:50, one with a `#` id). Served as `/radar3d/cells/{ts}?bbox=…`.
+- **Manifest**: `grid_clouds` next to `grid` (same bounds — rain crops are now always aligned
+  to two 1 km cells), per-frame `clouds`/`cells` URLs or `null`, `flows_clouds`.
+- **Worker** (`radar3d/ingest.py`): three loops in one process — rain (as before), ICON runs in
+  a background thread (one download per run, ~45–60 min after run time; `hhl` heights cached
+  once as `icon-full-heights.npy`), KONRAD every minute. Cloud frames are written right after
+  each rain cycle and back-filled for existing rain stamps when a run lands.
+  **Sweep discovery** now learns each site's per-tilt second offsets from one listing and
+  fetches the predicted file names (±1 s) directly; a site is re-listed every 15 min
+  (staggered) or once when a predicted file is >2 min overdue — ~1 MB/min of listings instead
+  of 17. Sites are gridded one at a time (no more holding all 170 decoded sweeps).
+- **Validation** against the app session's Isen cloud fixture (same ICON files, same grid):
+  at a model step (12:00) **100 % of water and 99.99 % of cover voxels identical**; between
+  steps 98.6–99.6 % identical (the flow uses every third model level between 1 and 10 km
+  instead of all 65, which shifts the semi-Lagrangian warp slightly). Cells: exact.
+- **Numbers** (dev Mac): ICON step load 21–23 s (317 files: 57 q/clc levels × 5 + 16 u/v
+  levels × 2; ~45 MB per step, ~270 MB per run of 6 steps); cloud frame synthesis 0.4–0.9 s;
+  `hhl` once 10 s. Cloud frame 7.6 MB + flow 1.3 MB on disk (+~320 MB for 3 h). Full suite
+  108 tests, ruff clean.
+- Live locally: `serve` now on `0.0.0.0:5599` for phone testing (LAN IP of this Mac), worker
+  restarted with all three products.
+
+**Contract additions** (sent to the app session): `grid_clouds` `{…, encoding: {scale: 0.01,
+offset: 0, nodata: 0, unit: "g/m3;percent"}, channel_scales: [0.01, 0.4], channels: 2,
+resolution: 2000}`; clouds extra block = `u16 flow_w, u16 flow_h` + `flow_h × flow_w` float16
+`(dx, dy)` pairs, row-major from the north, spanning the frame's bounds, cloud-grid cells per
+5 min (`dx` east, `dy` south), `flow_w = ceil(width/4)`, `flow_h = ceil(height/4)`; cells
+endpoint returns `{"timestamp", "cells": [StormCell…], "source"}` filtered by centroid.
+
+**Not done:** 500 m × 250 m detail boxes (phase 3 option) — not cheap: a second gridding pass
+at 4× voxel density inside KONRAD3D cell boxes plus a tile scheme; noted as a follow-up.
