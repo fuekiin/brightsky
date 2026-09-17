@@ -232,6 +232,17 @@ def test_cells_are_parsed_and_indexed(ingest):
     assert indexed['cells'] == [(CYCLE, 3)]
 
 
+class _FakeConn:
+    def __init__(self, sink):
+        self.sink = sink
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 class FakeIcon:
     """Pretends every file exists; the loader is patched to synthesise."""
 
@@ -329,6 +340,18 @@ def test_forecast_window_after_the_newest_observed_frame(
     assert ing.write_forecast(CYCLE) == 0
     # the next observed cycle: 12:00 exists, 12:05 is beyond the run
     assert ing.write_forecast(CYCLE + CYCLE_LEN) == 0
+    # a run known only to the index (files gone) is dropped as well
+    ing.indexed_forecast_products = lambda: {
+        'forecast_rain/20260901T00Z', key}
+    dropped = []
+    ing.index = lambda *a: None
+    ing._index_db = ing.index                    # pretend the DB path
+    monkeypatch.setattr(ingest_module, 'get_connection',
+                        lambda: _FakeConn(dropped))
+    monkeypatch.setattr(ingest_module, 'delete_index_before',
+                        lambda conn, product, cutoff: dropped.append(product))
+    ing.clean_forecasts(keep=newest)
+    assert 'forecast_rain/20260901T00Z' in dropped
 
 
 def test_disk_floor_stops_downloads(ingest):

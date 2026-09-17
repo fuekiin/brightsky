@@ -44,6 +44,7 @@ from brightsky.radar3d.store import (
     FrameStore,
     delete_index_before,
     index_frame,
+    indexed_products,
     indexed_timestamps,
 )
 from brightsky.radar3d.sweeps import (
@@ -717,9 +718,28 @@ class Radar3DIngest:
         self.clean_forecasts(keep=run)
         return written
 
-    def clean_forecasts(self, keep):
-        """Drop every forecast run but the newest one and `keep`."""
+    def _index_runs(self):
+        """Forecast runs known to the index (files may be gone)."""
         runs = set()
+        for key in self.indexed_forecast_products():
+            try:
+                run = datetime.datetime.strptime(
+                    key.split('/', 1)[1], RUN_FORMAT)
+            except (IndexError, ValueError):
+                continue
+            runs.add(run.replace(tzinfo=datetime.UTC))
+        return runs
+
+    def indexed_forecast_products(self):
+        if self.index != self._index_db:
+            return set()
+        with get_connection() as conn:
+            return indexed_products(conn, 'forecast_rain/')
+
+    def clean_forecasts(self, keep):
+        """Drop every forecast run but the newest one and `keep` — files
+        and index rows, whichever of the two still exists."""
+        runs = self._index_runs()
         for product in FORECAST_PRODUCTS:
             base = self.store.root / product
             if base.is_dir():

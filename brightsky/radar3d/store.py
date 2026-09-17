@@ -128,3 +128,14 @@ def delete_index_before(conn, product, cutoff):
         deleted = cur.rowcount
     conn.commit()
     return deleted
+
+
+def indexed_products(conn, prefix):
+    """Distinct product names in the index starting with `prefix`."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT product FROM radar3d_frames "
+            "WHERE product LIKE %s",
+            (prefix + '%',),
+        )
+        return {row[0] for row in cur.fetchall()}
