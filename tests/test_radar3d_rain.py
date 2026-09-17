@@ -71,3 +71,27 @@ def test_skips_sites_with_fewer_than_two_tilts(isen_grid, isn_cycle):
     meta, tilts = isn_cycle
     geom = SiteGeometry(isen_grid, meta)
     assert not grid_rain(isen_grid, [(geom, tilts[:1])]).any()
+
+
+def test_gather_tolerates_361_ray_sweeps(isen_grid, isn_cycle):
+    import dataclasses
+    meta, tilts = isn_cycle
+    # Geometry laid out for a 361-ray site file, sampling 360-ray tilts
+    geom = SiteGeometry(isen_grid, dataclasses.replace(meta, nrays=361))
+    assert geom.ray.max() == 360
+    vol = grid_rain(isen_grid, [(geom, tilts)])
+    assert (vol > 0).sum() > 50_000
+    # ...and a 360-ray geometry sampling a tilt padded to 361 rays
+    padded = [(el, np.vstack([dbz, dbz[:1]])) for el, dbz in tilts]
+    ref = grid_rain(isen_grid, [(SiteGeometry(isen_grid, meta), tilts)])
+    assert np.array_equal(
+        grid_rain(isen_grid, [(SiteGeometry(isen_grid, meta), padded)]), ref)
+
+
+def test_failing_site_is_skipped(isen_grid, isn_cycle):
+    meta, tilts = isn_cycle
+    geom = SiteGeometry(isen_grid, meta)
+    broken = [(el, dbz[:, :0]) for el, dbz in tilts]     # zero gates
+    ref = grid_rain(isen_grid, [(geom, tilts)])
+    assert np.array_equal(
+        grid_rain(isen_grid, [(geom, broken), (geom, tilts)]), ref)

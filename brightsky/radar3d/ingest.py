@@ -9,6 +9,7 @@ import datetime
 import logging
 import shutil
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -170,16 +171,24 @@ class Radar3DIngest:
             files = self.cycle_files(cycle)
             age = (self.now() - cycle).total_seconds()
             if self.is_complete(files):
-                self.process_cycle(cycle)
+                self._process_safely(cycle)
             elif age >= self.settings['cycle_timeout']:
                 if files:
                     logger.warning(
                         'Cycle %s timed out with %d/%d sweeps',
                         cycle, len(files),
                         len(self.sites) * TILTS_PER_SITE)
-                    self.process_cycle(cycle)
+                    self._process_safely(cycle)
                 else:
                     self._discard(cycle)
+
+    def _process_safely(self, cycle):
+        # One bad cycle must not stall the pipeline: log, drop it, move on
+        try:
+            self.process_cycle(cycle)
+        except Exception:
+            logger.exception('Gridding cycle %s failed; discarding it', cycle)
+            self._discard(cycle)
 
     def _safe_list(self, site):
         try:
@@ -216,11 +225,11 @@ class Radar3DIngest:
         for site, tilts in by_site.items():
             if len(tilts) < 2:
                 continue
-            # Tilt index 05 is the lowest elevation (0.5°) with the full
-            # gate range; 00 is 5.5°. Any file carries the site metadata.
-            first = min(tilts)[1]
             try:
-                meta = read_site_meta(first, site)
+                # Every tilt carries the site metadata; take the layout
+                # most tilts agree on (a sweep occasionally has 361 rays)
+                metas = [read_site_meta(path, site) for _, path in tilts]
+                meta = Counter(metas).most_common(1)[0][0]
                 data = [read_tilt(path) for _, path in tilts]
             except Exception:
                 logger.exception('Skipping %s: unreadable sweep', site)

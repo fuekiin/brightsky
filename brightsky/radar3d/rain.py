@@ -83,9 +83,13 @@ class SiteGeometry:
         return sum(a.nbytes for a in (self.flat, self.ray, self.gate, self.el))
 
     def _gather(self, dbz, sel):
-        nbins = dbz.shape[1]                   # higher tilts have fewer gates
+        # Higher tilts have fewer gates; and the DWD occasionally emits a
+        # sweep with 361 instead of 360 one-degree rays (an extra ray at
+        # the wrap), so a ray index from another tilt's layout is clamped.
+        nrays, nbins = dbz.shape
         gate = self.gate[sel]
-        v = dbz[self.ray[sel], np.minimum(gate, nbins - 1)]
+        ray = np.minimum(self.ray[sel], nrays - 1)
+        v = dbz[ray, np.minimum(gate, nbins - 1)]
         v[gate >= nbins] = np.nan
         return v
 
@@ -144,7 +148,12 @@ def grid_rain(grid, contributions):
     for geom, tilts in contributions:
         if geom.n == 0:
             continue
-        sub = geom.grid_cycle(tilts)
+        try:
+            sub = geom.grid_cycle(tilts)
+        except Exception:
+            logger.exception(
+                'Skipping site %s: gridding failed', geom.meta.site)
+            continue
         view = vol[:, geom.row0:geom.row1, geom.col0:geom.col1]
         np.maximum(view, sub, out=view)
     return vol

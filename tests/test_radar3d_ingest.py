@@ -119,3 +119,14 @@ def test_already_indexed_cycles_are_skipped(ingest):
     ing.indexed = lambda since: {CYCLE}
     ing.poll_once()
     assert indexed == [] and source.downloads == 0
+
+
+def test_failing_cycle_is_discarded_not_fatal(ingest, tmp_path):
+    ing, source, indexed = ingest()
+
+    def boom(cycle):
+        raise RuntimeError('corrupt sweep')
+    ing.process_cycle = boom
+    ing.poll_once()                          # must not raise
+    assert indexed == [] and CYCLE in ing.done
+    assert not (tmp_path / 'raw' / '20260916T1150Z').exists()
