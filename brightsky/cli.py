@@ -147,3 +147,19 @@ def _parse_params(parameters):
     if param_name is not None:
         raise click.UsageError(usage)
     return params
+
+
+@cli.command(name='radar3d-work')
+def radar3d_work():
+    """Start the nano radar3d worker (sweep polling + gridding)."""
+    from brightsky.radar3d.ingest import run_forever
+    run_forever()
+
+
+@cli.command(name='radar3d-grid')
+@click.argument('directory')
+def radar3d_grid(directory):
+    """Grid saved sweep_vol_z files from DIRECTORY into the frame store."""
+    from brightsky.radar3d.ingest import grid_directory
+    for cycle in grid_directory(directory):
+        print(cycle.isoformat())
