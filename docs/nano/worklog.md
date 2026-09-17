@@ -227,3 +227,11 @@ plan: `plans/2026-09-17-radar3d-phase1.md`):
   start) grids without it and records `sites` in the index/manifest.
 - Not deployed. The prod overlay (service + bind mount on `web`) is written up in
   `deployment.md`; it is a `bright_sky_config` change plus a `docker compose up -d radar3d web`.
+
+**App side (same day, from the WeatherGermany session, branch `feature/radar-3d`):** client wired
+to `/radar3d` and verified against the local serve — manifest, `NANO3D` header/inflate/extra
+block, 4-at-a-time frame fetches checked against the manifest grid; 120 km around 51.0/10.5 →
+12 frames 241×241×24 in ~0.5 s; an edge crop near Sylt clipped as documented. Nothing to change
+here. **Contract notes for phase 2:** (1) the client matches clouds to rain frames by index, so
+cloud frames must be served on exactly the rain timestamps (a `null` cloud entry when the model
+step is missing, as the brief says); (2) the clouds' flow field goes in the header's extra block.
