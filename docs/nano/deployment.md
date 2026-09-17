@@ -83,9 +83,9 @@ Then `docker compose ... pull && up -d radar3d web`. Expectations on the 4-core 
 | | |
 |---|---|
 | RAM | rain geometry ~420 MiB + ICON steps (~15 MB each, ≤12 kept) + transients; sites are gridded one at a time. Watch the container's RSS after the first ICON run (`docker stats`). |
-| CPU | rain 3–13 s per 5-min cycle; cloud frame ~0.5 s per cycle; ICON run load ~6–8 min per 3 h (374 GRIB decodes per step × 12 steps, in the ICON thread); cells negligible |
-| Disk | rain 15.3 MB + clouds 7.6 MB + flow 1.3 MB per 5 min → ~0.9 GB at 3 h retention; forecast ~150 MB per run, two runs kept; raw sweeps/GRIBs transient (≤ ~1 GB during an ICON download; downloads stop below `RADAR3D_MIN_FREE_GB` = 5 GB free) |
-| Traffic | ~1 MB/min sweep listings + ~10 MB per cycle sweeps + ~900 MB per ICON run with the forecast (12 steps incl. `qr`; every 3 h, ~7 GB/day) + <0.1 MB/min KONRAD3D |
+| CPU | rain 3–13 s per 5-min cycle; cloud frame ~0.5 s per cycle; ICON run load ~3–4 min per 3 h (374 GRIB decodes per step × 6 steps, in the ICON thread); forecast frames ~0.5 s each, 12 per run load + 1 per cycle; cells negligible |
+| Disk | rain 15.3 MB + clouds 7.6 MB + flow 1.3 MB per 5 min → ~0.9 GB at 3 h retention; forecast ~150 MB per run key (12 × 12.7 MB, plus one frame per cycle), two run keys kept, 3 h retention by stamp; raw sweeps/GRIBs transient (≤ ~1 GB during an ICON download; downloads stop below `RADAR3D_MIN_FREE_GB` = 5 GB free) |
+| Traffic | ~1 MB/min sweep listings + ~10 MB per cycle sweeps + ~450 MB per ICON run with the forecast (6 steps incl. `qr`; every 3 h, ~3.5 GB/day) + <0.1 MB/min KONRAD3D |
 
 The image needs `eccodes` (pinned in `requirements.txt`; the wheel bundles the C library).
 Migration `0021_radar3d.sql` is additive. Rollback: `docker compose stop radar3d`, the

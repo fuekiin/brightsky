@@ -287,21 +287,23 @@ a synthetic ICON run producing cloud frames), `test_web.py::test_radar3d_*`.
 ## Radar 3D pipeline — forecast (2026-09-18)
 
 The cloud volumes were always a forecast product; this extends the same ICON-D2 run to the
-hours past the observed timeline, hourly, for rain and clouds.
+hour past the observed timeline, in 5-minute frames, for rain and clouds.
 
 - **Rain**: precipitation water `qr+qs+qg` on the model levels → slabs (like the clouds'
   condensed water) → dBZ bytes via the Z–M relation Z = 2.4e4·M^1.82 (`icon.pwc_to_dbz_bytes`),
   so the app's rain shader, legend and intensity words apply unchanged; the manifest's forecast
   `encoding` carries a `derived` note. Model rain at 2 km is smoother than radar: it shows where
   and how high precipitation forms, not the cores.
-- **Frames**: at exact model steps only (`CloudModel.forecast_at`); no 5-minute synthesis. The
-  flow block carries the model wind of that hour in cloud-grid cells per 5 minutes; the client
-  advects between hourly frames by scaling with the gap.
+- **Frames**: every 5 minutes for the next `RADAR3D_FORECAST_MINUTES` (60) after the newest
+  observed rain frame, synthesised like the observed clouds (`CloudModel.forecast_frame_at`:
+  water, cover and precipitation water pulled along the model wind and blended between the
+  bracketing hourly steps). Written after each rain cycle and after a run load. The flow block
+  is in cloud-grid cells per 5 minutes, i.e. per frame, as for the observed clouds.
 - **Storage**: `forecast_rain/<run>/<ts>.npy` etc., keyed by run (`%Y%m%dT%HZ`) so URLs are
   immutable; the index rows use the same `forecast_rain/<run>` product name; the newest two
   runs are kept, older ones dropped when a run's frames have been written.
 - **Manifest**: `query._radar3d_forecast` picks the newest run present in `radar3d_frames`
-  and lists its hours after the newest observed frame; `forecast` is omitted (and
+  and lists its 5-minute stamps after the newest observed frame (`lead_min`); `forecast` is omitted (and
   `flows_forecast` false) when none is loaded.
 - **Endpoints**: `/radar3d/forecast/rain/{run}/{ts}` (1 channel), `/radar3d/forecast/clouds/{run}/{ts}`
   (2 channels), both with the flow block; 404 for unknown run/hour, 422 for other products.

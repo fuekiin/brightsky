@@ -333,3 +333,12 @@ client-side crossfade along the flow, Z–M-mapped dBZ, separate `forecast` bloc
 per run 12 × (3.8 MB rain + 7.6 MB clouds + 1.3 MB flow) ≈ 150 MB, two runs kept. Storage guards
 added: `RADAR3D_MIN_FREE_GB` (5) stops all downloads below that free space; stale raw ICON run
 directories (late/abandoned runs) and old KONRAD files are removed. Not deployed yet.
+
+**Revised the same evening (owner's decision after discussing cadence):** forecast frames are
+**every 5 minutes for the next hour**, synthesised on the server exactly like the observed
+cloud frames — `CloudModel.forecast_frame_at(ts)` pulls water, cover *and* precipitation water
+along the model wind and blends the bracketing hourly steps — instead of hourly frames with
+client-side interpolation. `write_forecast()` runs after every rain cycle (the window slides
+with the newest observed frame) and after a run load; frames stay keyed by run. `lead_min`
+replaces `lead_h`; `RADAR3D_FORECAST_MINUTES` = 60, `RADAR3D_ICON_STEPS` back to 6 (~450 MB per
+run with `qr`). Not deployed; the owner stopped the first deploy attempt to discuss this first.
