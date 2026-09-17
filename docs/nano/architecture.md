@@ -305,3 +305,7 @@ hours past the observed timeline, hourly, for rain and clouds.
   `flows_forecast` false) when none is loaded.
 - **Endpoints**: `/radar3d/forecast/rain/{run}/{ts}` (1 channel), `/radar3d/forecast/clouds/{run}/{ts}`
   (2 channels), both with the flow block; 404 for unknown run/hour, 422 for other products.
+- **Storage guards**: `RADAR3D_MIN_FREE_GB` (5) — below that free space the worker skips sweep
+  and ICON downloads and logs an error (Postgres shares the disk); raw ICON run directories
+  that are no longer candidates are removed every poll; KONRAD raw files older than the
+  retention are removed.

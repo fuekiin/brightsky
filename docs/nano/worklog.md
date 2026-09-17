@@ -328,6 +328,8 @@ client-side crossfade along the flow, Z–M-mapped dBZ, separate `forecast` bloc
 - Tests: Z–M mapping, `forecast_at`, worker forecast writing + run retention, manifest block
   (present/absent, starts after the newest observed frame), forecast frame routes (114 total).
 
-**Costs:** download per run ~48 MB × 12 steps ≈ 575 MB (every 3 h; was ~270 MB), load ≈ 12
-steps × 20–25 s; storage per run 12 × (3.8 MB rain + 7.6 MB clouds + 1.3 MB flow) ≈ 150 MB, two
-runs kept. Not deployed yet.
+**Costs (measured):** a 12-step run is ~900 MB of GRIB downloads (every 3 h, ~7 GB/day; was
+~270 MB per run) and loads in ~6.5 min on the dev Mac (380 s, alongside the rain loop); storage
+per run 12 × (3.8 MB rain + 7.6 MB clouds + 1.3 MB flow) ≈ 150 MB, two runs kept. Storage guards
+added: `RADAR3D_MIN_FREE_GB` (5) stops all downloads below that free space; stale raw ICON run
+directories (late/abandoned runs) and old KONRAD files are removed. Not deployed yet.
