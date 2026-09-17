@@ -143,7 +143,8 @@ def ingest(tmp_path, data_dir, small_grid):
         )
         ing.settings = dict(
             poll_interval=60, cycle_timeout=420, backfill_minutes=70,
-            retention_hours=3, listing_interval=900, icon_steps=2)
+            retention_hours=3, listing_interval=900, icon_steps=2,
+            forecast_hours=2, min_free_gb=0.0)
         return ing, source, indexed
     return make
 
@@ -326,3 +327,26 @@ def test_icon_run_writes_forecast_frames_and_drops_old_runs(
     # the older run's frames were dropped once the newer run was written
     old_dir = ing.store.root / f'forecast_rain/{runs[0]:%Y%m%dT%HZ}'
     assert not old_dir.exists()
+
+
+def test_disk_floor_stops_downloads(ingest):
+    ing, source, indexed = ingest()
+    ing.settings['min_free_gb'] = 10 ** 6            # nothing has that much
+    ing.poll_once()
+    assert source.listings == 0 and source.downloads == 0
+    ing.icon_source = FakeIcon()
+    ing.poll_icon()
+    assert ing.icon_source.fetched == 0
+
+
+def test_stale_raw_icon_runs_are_removed(ingest, tmp_path):
+    ing, source, indexed = ingest()
+    stale = tmp_path / 'raw' / 'icon' / '20260901T00Z'
+    stale.mkdir(parents=True)
+    (stale / 'x.grib2.bz2').write_bytes(b'old')
+    junk = tmp_path / 'raw' / 'icon' / 'notarun'
+    junk.mkdir()
+    ing.icon_source = FakeIcon()
+    ing.settings['icon_steps'] = 0                   # nothing to load
+    ing.poll_icon()
+    assert not stale.exists() and not junk.exists()

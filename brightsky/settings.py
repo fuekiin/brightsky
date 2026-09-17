@@ -31,6 +31,7 @@ RADAR3D_ICON_STEPS = 12
 RADAR3D_ICON_URL = 'https://opendata.dwd.de/weather/nwp/icon-d2/grib/'
 RADAR3D_KONRAD_URL = 'https://opendata.dwd.de/weather/radar/konrad3d/'
 RADAR3D_LISTING_INTERVAL = 900
+RADAR3D_MIN_FREE_GB = 5.0
 RADAR3D_POLL_INTERVAL = 60
 RADAR3D_RETENTION_HOURS = 3
 RADAR3D_SITES = [

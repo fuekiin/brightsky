@@ -15,6 +15,7 @@ a listing is only taken again when a predicted file is overdue, or every
 """
 import datetime
 import logging
+import os
 import shutil
 import threading
 import time
@@ -212,6 +213,7 @@ class Radar3DIngest:
             listing_interval=settings.RADAR3D_LISTING_INTERVAL,
             icon_steps=settings.RADAR3D_ICON_STEPS,
             forecast_hours=settings.RADAR3D_FORECAST_HOURS,
+            min_free_gb=settings.RADAR3D_MIN_FREE_GB,
         )
         self.geometries = {}
         self.done = set()
@@ -284,10 +286,30 @@ class Radar3DIngest:
             minutes=self.settings['backfill_minutes'])
         return now, since
 
+    # -- disk guard ---------------------------------------------------
+
+    def free_gb(self):
+        self.raw_dir.mkdir(parents=True, exist_ok=True)
+        st = os.statvfs(self.raw_dir)
+        return st.f_bavail * st.f_frsize / 2 ** 30
+
+    def has_space(self, what):
+        """Never be the process that fills the disk Postgres lives on."""
+        free = self.free_gb()
+        if free < self.settings['min_free_gb']:
+            logger.error(
+                'Only %.1f GB free (floor %.1f GB): skipping %s downloads',
+                free, self.settings['min_free_gb'], what)
+            return False
+        return True
+
     # -- rain: polling ------------------------------------------------
 
     def poll_once(self):
         now, since = self.window()
+        if not self.has_space('sweep'):
+            self.clean()
+            return
         self.done |= self.indexed('rain', since)
         with ThreadPoolExecutor(max_workers=8) as pool:
             listed = [s for s in self.sites if self.needs_listing(s, now)]
@@ -558,9 +580,13 @@ class Radar3DIngest:
         if self.icon_source is None:
             return
         now = self.now()
-        for run in self.icon_candidates(now):
+        candidates = self.icon_candidates(now)
+        self.clean_icon_raw(keep=candidates)
+        for run in candidates:
             if run in self.icon_loaded or self.icon_attempts[run] > 60:
                 continue
+            if not self.has_space('ICON-D2'):
+                break
             self.icon_attempts[run] += 1
             try:
                 if self.load_run(run):
@@ -570,6 +596,18 @@ class Radar3DIngest:
                 logger.exception('ICON-D2 run %s failed', run)
         with self.clouds_lock:
             self.clouds.drop_before(now - ICON_KEEP)
+
+    def clean_icon_raw(self, keep):
+        """Raw run directories of runs that are no longer candidates (late,
+        partial or abandoned runs would otherwise leak ~1 GB each)."""
+        base = self.raw_dir / 'icon'
+        if not base.is_dir():
+            return
+        keep_names = {f'{run:{RUN_FORMAT}}' for run in keep}
+        for path in base.iterdir():
+            if path.is_dir() and path.name not in keep_names:
+                shutil.rmtree(path, ignore_errors=True)
+                logger.info('Removed stale raw ICON-D2 run %s', path.name)
 
     def load_run(self, run):
         """Download and load a run's steps; False while files are missing."""
@@ -737,6 +775,9 @@ class Radar3DIngest:
         for cycle in self.pending_cycles():
             if cycle < cutoff:
                 self._discard(cycle)
+        for path in self.raw_dir.glob('konrad/*'):
+            if path.is_file() and path.stat().st_mtime < cutoff.timestamp():
+                path.unlink(missing_ok=True)
 
 
 def make_ingest(**kwargs):
