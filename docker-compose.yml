@@ -7,6 +7,9 @@ x-brightsky:
   environment:
     BRIGHTSKY_DATABASE_URL: postgres://postgres:pgpass@postgres
     BRIGHTSKY_REDIS_URL: redis://redis
+  volumes:
+    # nano radar3d frames: written by the radar3d worker, read by web
+    - .data/radar3d:/app/.data/radar3d
 
 services:
   postgres:
@@ -30,6 +33,10 @@ services:
     restart: unless-stopped
     ports:
       - 5000:5000
+  radar3d:
+    <<: *brightsky
+    command: --migrate radar3d-work
+    restart: unless-stopped
   brightsky:
     <<: *brightsky
     scale: 0
