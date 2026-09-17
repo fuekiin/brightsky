@@ -173,3 +173,54 @@ ingestion, `fed84e8` endpoints, + this docs commit):
   other three health endpoints, which shipped in the same image/migration set but are
   unverified against real DWD data beyond pollen) is the next step before this is a real
   user-facing feature.
+
+## 2026-09-17 — radar3d phase 1: `/radar3d` manifest + rain crops (branch `nano-radar3d`)
+
+**Done** (brief: `../WeatherGermany/docs/superpowers/specs/2026-09-17-radar-3d-backend-brief.md`,
+plan: `plans/2026-09-17-radar3d-phase1.md`):
+
+- New `brightsky/radar3d/` package: `grid.py` (mercator voxel grid, bbox snapping), `frame.py`
+  (`NANO3D` wire format), `sweeps.py` (sweep names + ODIM-HDF5 reading), `rain.py` (the ported
+  voxel-centric gridder with **precomputed per-site index maps**), `store.py` (national `.npy`
+  frames + `radar3d_frames` index), `ingest.py` (the stand-alone worker). Two additive routes in
+  `web/app.py`, `migrations/0021_radar3d.sql`, `RADAR3D_*` settings, a `radar3d` compose service.
+- **The port is byte-exact** against the app repo's `grid_radar_volume.py`: golden test
+  `tests/test_radar3d_rain.py` (site isn, 2026-09-16 11:50 UTC, the 300×300 Isen grid; the ten
+  sweeps and the reference volume live in `tests/data/radar3d/`).
+- Measured on the dev Mac (M-series, 8 cores), Germany 1 km × 500 m grid (698 × 912 × 24):
+  geometry precompute 0.1–0.6 s per site, 20–29 MiB per site (~420 MiB for 17, held in RAM);
+  a full 17-site cycle (170 sweeps) grids in **~7 s** (10.7 s including the one-time precompute);
+  a national frame is 15.3 MB on disk (~550 MB for the 3 h retention); crops over HTTP:
+  100 km box at 1 km = 11 KB in ~0.1 s, 250 km box = 248 KB in ~0.09 s, 2 km = a third of that.
+- Cross-check against the app session's 2 km national fixture (`radar3d-de-2026-09-16.json`,
+  25 cycles 11:00–13:00): echo-presence Jaccard 0.82–0.83, column-composite correlation
+  0.74–0.77, our echo tops +0.7 slabs higher, max dBZ within a few dB. Expected: `resolution=2000`
+  is a 2×2 **max-pool** of the 1 km grid, the fixture point-sampled voxel centres at 2 km.
+- Verified live locally: `radar3d-work` against opendata.dwd.de + `serve` on `127.0.0.1:5599`,
+  frames decoded end to end with `frame.decode`. Full suite + ruff green (85 tests) against a
+  local Postgres 16 with `cube`/`earthdistance` (no Docker on this machine; the zonky
+  `embedded-postgres-binaries-darwin-arm64v8` tarball in the session scratchpad did the job).
+
+**Deviations from the brief** (told the app session):
+
+1. Header byte layout (the brief only listed the fields): little-endian, `NANO3D` u16 version
+   u16 width u16 height u16 levels u16 channels u32 zlib-length u32 extra-length + 8 reserved.
+2. Frames stored as uncompressed `.npy` under `RADAR3D_DATA_DIR` (default `.data/radar3d`, not
+   `/data/radar3d`), memory-mapped for cropping; the `.bin` framing is applied per request.
+3. Phase 1 manifest: `clouds`/`cells` are `null`, `flows_clouds: false`; `resolution=2000` is
+   max-pooled rain. `distance` is metres (default 100000; caps 250 km / 600 km as in the brief).
+4. Manifest timestamps are Bright Sky style (`+00:00`); frame URL paths use `…Z`. A `from`/`to`
+   window may span at most 3 h (the retention).
+
+**Open questions / follow-ups:**
+
+- Listing traffic: each site listing is ~1 MB (5760 entries, 48 h, no gzip, no conditional GET
+  on the DWD side), so per-minute polling of 17 sites is ~17 MB/min. Follow-up: predict the next
+  cycle's file names from the per-tilt second offsets (stable per site) and only list every few
+  minutes as a fallback.
+- Geometry lives in RAM (~420 MiB). If the 7.7 GB prod box gets tight, save the four per-site
+  arrays as `.npy` and `np.load(mmap_mode='r')` them — the code path is the same.
+- `pro` (Prötzel) had gaps in the saved 2026-09-16 data; the cycle timeout (7 min after the cycle
+  start) grids without it and records `sites` in the index/manifest.
+- Not deployed. The prod overlay (service + bind mount on `web`) is written up in
+  `deployment.md`; it is a `bright_sky_config` change plus a `docker compose up -d radar3d web`.

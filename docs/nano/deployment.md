@@ -50,3 +50,30 @@ Build pipeline yes, auto-deploy no:
 - **Deploy stays a manual one-liner** on the server (`BRIGHTSKY_IMAGE_TAG=… compose pull &&
   up -d`), optionally later a `workflow_dispatch` SSH job. Deploy scripts and the tag ledger
   belong in `bright_sky_config`, not in the forks.
+
+## radar3d container (phase 1, not yet deployed)
+
+The 3D radar pipeline (`docs/nano/architecture.md`, "Radar 3D pipeline") ships in the same
+image but runs as its **own container**, so the ingest worker's CPU bursts stay unaffected.
+Overlay for `bright_sky_config`'s `brightsky.yml` (the frames directory must be visible to
+both the worker that writes it and `web` that serves crops from it):
+
+```yaml
+x-brightsky:
+  &brightsky
+  # ...existing...
+  volumes:
+    - .data/brightsky:/app/.cache
+    - .data/radar3d:/app/.data/radar3d      # new: radar3d frames (~600 MB at 3 h retention)
+
+services:
+  radar3d:
+    <<: *brightsky
+    command: --migrate radar3d-work
+    restart: always
+```
+
+Then `docker compose ... pull && up -d radar3d web`. Expectations on the 4-core / 7.7 GB box:
+~0.5 GB RSS for the radar3d container (per-site geometry in RAM), ~7–15 s CPU per 5-minute
+cycle, ~17 MB/min of DWD listing traffic, ~600 MB disk. Migration `0021_radar3d.sql` is
+additive. Rollback: `docker compose stop radar3d`, the `/radar3d` routes then answer 404.

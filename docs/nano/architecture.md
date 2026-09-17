@@ -152,3 +152,82 @@ The parsers warn on unknown pollen index values and unknown gt slot keys, and sk
 values (`-1` for pollen, `null` elsewhere). New zone/city additions flow through automatically
 — except a new gt city missing from `Uv_Stationen`, which silently becomes unresolvable by
 lat/lon (it still appears in `?city=`/all-cities responses) until added to the static table.
+
+## Radar 3D pipeline (phase 1: rain) — added 2026-09-17, branch `nano-radar3d`
+
+Serves the nano app's 3D radar view: a national reflectivity **volume** (1 km × 500 m voxels,
+24 slabs 0–12 km) every 5 minutes, gridded from the DWD's 17 `sweep_vol_z` volume scans, and
+delivered as viewport crops. Brief: `../WeatherGermany/docs/superpowers/specs/2026-09-17-radar-3d-backend-brief.md`.
+Everything lives in `brightsky/radar3d/`; the existing huey worker, parsers and tables are
+untouched (the worker sits near CPU saturation during ingest bursts, so radar3d has its own
+container).
+
+### Stations
+
+1. **Poll** — `radar3d/ingest.py` `SweepSource.list_site()`: the 17 site listings at
+   `weather/radar/sites/sweep_vol_z/<site>/hdf5/filter_polarimetric/` every
+   `RADAR3D_POLL_INTERVAL` (60 s). File names carry site, tilt index and scan time
+   (`sweeps.parse_sweep_name`); a sweep belongs to the 5-minute **cycle** its timestamp floors
+   to. Only cycles within `RADAR3D_BACKFILL_MINUTES` (70) that are not yet indexed are fetched,
+   into `<data dir>/raw/<cycle>/`.
+2. **Cycle gate** — a cycle is gridded when every site has its 10 tilts, or
+   `RADAR3D_CYCLE_TIMEOUT` (420 s) after the cycle start with whatever arrived (the last tilt of
+   a cycle lands ~4 min after its start, plus upload and polling delay). Later arrivals are
+   ignored: frames are immutable once served.
+3. **Read** — `sweeps.read_site_meta` (site lat/lon/height, `nbins`/`nrays`/`rscale`/`rstart`)
+   and `sweeps.read_tilt` (`elangle` + dBZ as float32, NaN for nodata/undetect/below 0 dBZ,
+   gain/offset from the file). Tilt file index ≠ elevation: 00–05 are 5.5°…0.5°, 06–09 are
+   8/12/17/25°, and higher tilts have fewer gates (496/240 vs 720) — always from the file.
+4. **Grid** — `rain.py`, the port of the app repo's `grid_radar_volume.py`. `SiteGeometry`
+   precomputes once per site which voxels of the national grid lie within 180 km and inside a
+   generous elevation cone, and for each its sweep **ray**, **gate** and **elevation angle**
+   (exact inverse of the 4/3-earth beam model). Per cycle, `grid_cycle` only gathers the two
+   bracketing tilts per voxel, interpolates linearly in elevation angle, keeps one-sided echoes
+   within half a beam (0.5°) of a tilt, allows half a beam beyond the lowest/highest tilt, and
+   encodes `v = round((dBZ + 32) × 2)`, `0` = no echo. `grid_rain` merges sites by maximum. The
+   result is byte-identical to the reference script (golden test).
+5. **Store** — `store.FrameStore`: one uncompressed `.npy` per cycle at
+   `<RADAR3D_DATA_DIR>/rain/<YYYYMMDDTHHMMZ>.npy` (15.3 MB), written atomically. Postgres keeps
+   only the index: `radar3d_frames (product, timestamp, path, sites, created_at)`
+   (`migrations/0021_radar3d.sql`). Retention `RADAR3D_RETENTION_HOURS` (3): files and rows.
+6. **Web** — `query.radar3d()` builds the manifest (`GET /radar3d`): the crop around
+   `lat`/`lon` (`distance` metres to each side, snapped outward to voxel edges, aligned to 2
+   cells at `resolution=2000`), its bounds, and one entry per indexed frame in the window
+   (`from`/`to`, default the last 12 frames) with the crop's URL.
+   `GET /radar3d/rain/{ts}?bbox=…` memory-maps the national frame, slices (max-pools 2×2 for
+   2 km), zlib-compresses, and returns a `NANO3D` binary with
+   `Cache-Control: public, max-age=86400, immutable` (`Content-Encoding: identity` so traefik
+   leaves it alone). Slicing runs in the threadpool; the OS page cache serves repeat crops.
+
+### The grid
+
+`grid.GERMANY_1KM`: 47.0–55.2° N, 5.5–15.5° E, **698 × 912** columns × rows, rows regular in
+Web Mercator y (row 0 = north), columns regular in longitude, 24 × 500 m from 0 m ASL. Both
+dimensions are even so the 2 km max-pool aligns. `Grid.crop()` snaps a bbox outward with a
+1e-3-cell tolerance so a bbox emitted with 6 decimals snaps back to the same crop.
+
+### The binary frame (`radar3d/frame.py`)
+
+32-byte little-endian header, then the zlib block, then an optional extra block (phase 2):
+`0` magic `NANO3D` · `6` u16 version=1 · `8` u16 width · `10` u16 height · `12` u16 levels ·
+`14` u16 channels · `16` u32 zlib length · `20` u32 extra length · `24` 8 reserved bytes.
+Voxels are level-major `[level][row][col]`, one byte for rain.
+
+### Numbers (dev Mac, 2026-09-17)
+
+Geometry 20–29 MiB and 0.1–0.6 s per site (~420 MiB for 17, in RAM); a full cycle ~7 s;
+100 km crop 11 KB / 0.1 s, 250 km crop 248 KB / 0.09 s. Listing traffic ~1 MB per site per poll.
+
+### Tests
+
+`tests/test_radar3d_grid.py` (grid + header), `test_radar3d_sweeps.py`, `test_radar3d_rain.py`
+(byte-exact golden vs the reference gridder), `test_radar3d_store.py`, `test_radar3d_ingest.py`
+(fake source: completion, timeout, backfill window, retention), `test_web.py::test_radar3d_*`.
+Fixtures: `tests/data/radar3d/` (ten isn sweeps of 2026-09-16 11:50 UTC, golden volume).
+
+### Settings
+
+`RADAR3D_DATA_DIR` (`.data/radar3d`), `RADAR3D_SWEEPS_URL`, `RADAR3D_SITES`,
+`RADAR3D_POLL_INTERVAL` (60), `RADAR3D_CYCLE_TIMEOUT` (420), `RADAR3D_BACKFILL_MINUTES` (70),
+`RADAR3D_RETENTION_HOURS` (3). CLI: `radar3d-work` (the worker), `radar3d-grid DIR` (grid saved
+sweeps offline).
