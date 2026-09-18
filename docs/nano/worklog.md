@@ -367,3 +367,30 @@ forecast writes and disk-floor errors; new `brightsky/radar3d-forecast` measures
 forecast frame against the newest observed frame (column shares ≥8/20/35 dBZ, degraded beyond
 15 pp) — and a pre-deploy snapshot (`bright_sky_config/docs/pre-deploy-2026-09-18-forecast.md`).
 Record: `bright_sky_config/docs/deploy-2026-09-18-forecast.md`.
+
+## 2026-09-18 — forecast hour becomes a nowcast blend (branch `nano-radar3d-forecast`)
+
+The owner rejected the model-only forecast on the phone: at 06:50 local the radar showed sharp
+convective bands with 50+ dBZ cores across central Germany; the first forecast frame (model,
+run hours old) had none of them. The statistical acceptance (column shares) passed while the
+picture failed — a raw NWP field cannot continue a radar image. Spec from the app session,
+built as asked (`radar3d/nowcast.py`, `fb21c77`):
+
+- **Motion** per cycle from the two newest observed frames' column-maximum projections on the
+  2 km grid: block matching (tiles 16 km apart, ±16 km window, search ±10 km per 5 min, penalty
+  toward small shifts, parabolic sub-cell refinement — the app's `RadarDenseFlow` recipe),
+  zero/unknown where a tile has no echo ≥8 dBZ, filled with the model wind, 3×3-smoothed,
+  bilinear to the full grid.
+- **Extrapolation**: the newest observed volume (max-pooled to 2 km, bytes → linear Z) moved
+  semi-Lagrangian along that motion for each lead, all 24 slabs with the column's vector.
+- **Blend** in linear Z per voxel: Z = (1 − w)·Z_extrapolated + w·Z_model, w = (lead/60)²
+  (≈1 % at +5, 25 % at +30, 100 % at +60); model Z from the per-hydrometeor relations; bytes
+  below 0 dBZ are "no echo" (the observed floor).
+- **Timing**: forecast frames are rewritten after every rain cycle from that cycle's frame;
+  keys are `<run>-<basis>` (`forecast_rain/20260918T03Z-20260918T0650Z`) so served URLs stay
+  immutable; the manifest adds `basis`; the newest two keys are kept. Clouds stay the model
+  clouds; cells null; the flow block ships the motion actually used (radar where trackable,
+  model wind elsewhere), in the same unit.
+- Encoding note: `derived: "nowcast: radar extrapolation blended into ICON-D2 Z-M (w = (lead/60)^2; …)"`.
+- Cost: ~12 warps of a 24-slab volume plus the cloud/hydrometeor blends per cycle — ~20–30 s
+  per 5-minute cycle on the dev Mac, inside the cadence.

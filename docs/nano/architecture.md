@@ -312,3 +312,19 @@ hour past the observed timeline, in 5-minute frames, for rain and clouds.
   and ICON downloads and logs an error (Postgres shares the disk); raw ICON run directories
   that are no longer candidates are removed every poll; KONRAD raw files older than the
   retention are removed.
+
+### Nowcast blend (2026-09-18, `radar3d/nowcast.py`)
+
+The forecast rain is not the raw model: for each 5-minute lead the newest observed volume is
+moved along its own motion and blended into the model in linear Z.
+
+- `estimate_motion(prev, cur)`: block matching of the two newest column-maximum projections on
+  the 2 km grid (`TILE` 8 cells, `HALF` 8, `SEARCH` ±5 cells per 5 min, `PENALTY` 0.002·shift²
+  ·window energy, parabolic sub-cell refinement); tiles without echo ≥8 dBZ are unknown.
+  `fill_and_smooth` takes the model wind there and smooths 3×3; `upsample` gives the full field.
+  `motion_field` wraps the three; without a previous frame the model wind is used.
+- `advect_z(z, u, v, steps)`: `clouds.warp` on a linear-Z volume (backward sampling).
+- `blend_weight(lead) = (lead/60)²`; `blend_z` per voxel; `z_to_bytes` with the 0 dBZ floor.
+- `Radar3DIngest.write_forecast(newest)`: motion → 12 frames (rain nowcast, model clouds via
+  `CloudModel._blend`, flow = motion used) under key `<run>-<basis>`; `clean_forecasts` keeps
+  the newest two keys. The manifest reports `run` and `basis`; the URL key is opaque to the app.
