@@ -1139,6 +1139,9 @@ class Radar3DResponse(ResponseModel):
     frames: list[Radar3DFrame]
     flows_clouds: bool = Field(
         description="Whether cloud frames carry a flow field (phase 2)")
+    flows_rain: bool = Field(
+        default=False,
+        description="Whether observed rain frames carry the motion field in their extra block")  # noqa
     source: str = Field(
         description="Attribution of the underlying DWD product",
         examples=[

@@ -1321,3 +1321,33 @@ def test_radar3d_forecast_frames(radar3d_forecast, api):
                    '2026-09-16T12:15:00Z?bbox=52,53,13,14').status_code == 422
     assert api.get('/radar3d/forecast/rain/yesterday/2026-09-16T12:15:00Z'
                    '?bbox=52,53,13,14').status_code == 422
+
+
+def test_radar3d_rain_frame_carries_the_motion_block(radar3d_data, db, api):
+    from brightsky.radar3d.clouds import parse_flow_block
+    from brightsky.radar3d.grid import GERMANY_2KM
+    store = radar3d_data
+    H2, W2 = GERMANY_2KM.shape[1:]
+    flow = np.zeros((H2, W2, 2), np.float32)
+    flow[..., 0] = 1.25                                  # 2 km cells / 5 min
+    flow[..., 1] = -0.5
+    index_frame(db.conn, 'rain_flow', RADAR3D_TS,
+                store.write('rain_flow', RADAR3D_TS, flow, dtype=np.float32),
+                None)
+    data = api.get('/radar3d?lat=52.52&lon=13.41&distance=20000').json()
+    assert data['flows_rain'] is True
+    g = data['grid']
+    header, voxels, extra = radar3d_frame.decode(
+        api.get(data['frames'][0]['rain']).content)
+    fw, fh, vec = parse_flow_block(extra)
+    assert (fw, fh) == (-(-g['width'] // 4), -(-g['height'] // 4))
+    assert np.allclose(vec[..., 0], 2.5) and np.allclose(vec[..., 1], -1.0)
+    # at 2 km the vectors are in 2 km cells
+    data2 = api.get(
+        '/radar3d?lat=52.52&lon=13.41&distance=20000&resolution=2000').json()
+    _, _, extra2 = radar3d_frame.decode(api.get(data2['frames'][0]['rain']).content)  # noqa
+    _, _, vec2 = parse_flow_block(extra2)
+    assert np.allclose(vec2[..., 0], 1.25)
+    # frames without a motion field have an empty extra block
+    _, _, extra3 = radar3d_frame.decode(api.get(data['frames'][1]['rain']).content)  # noqa
+    assert extra3 == b''

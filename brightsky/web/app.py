@@ -766,14 +766,27 @@ def _rain_crop_bytes(timestamp, bbox, resolution):
     from brightsky.radar3d import frame
     from brightsky.radar3d.grid import GERMANY_1KM, OutsideGrid
     from brightsky.radar3d.store import FrameMissing, FrameStore
+    from brightsky.radar3d.clouds import flow_block
+    from brightsky.radar3d.grid import GERMANY_2KM
     scale = resolution // 1000
+    store = FrameStore(settings.RADAR3D_DATA_DIR)
     try:
         crop = GERMANY_1KM.crop(*bbox, align=2)
-        voxels = FrameStore(settings.RADAR3D_DATA_DIR).crop(
-            'rain', timestamp, crop, scale)
+        voxels = store.crop('rain', timestamp, crop, scale)
     except (OutsideGrid, FrameMissing) as e:
         raise query.NoData(str(e))
-    return frame.encode(voxels)
+    extra = b''
+    try:
+        # the motion at this frame's time, in the frame's own cells per
+        # 5 minutes (the field is kept on the 2 km grid)
+        flow = store.open('rain_flow', timestamp)
+        crop2 = GERMANY_2KM.crop(*bbox)
+        extra = flow_block(
+            flow, crop2, frame_width=voxels.shape[2],
+            frame_height=voxels.shape[1], scale=2.0 / scale)
+    except FrameMissing:
+        pass
+    return frame.encode(voxels, extra=extra)
 
 
 def _clouds_crop_bytes(timestamp, bbox):
@@ -852,7 +865,11 @@ async def radar3d_rain(
 ):
     """
     One reflectivity frame, cropped to `bbox`, as a `NANO3D` binary (see
-    [`/radar3d`](/operations/getRadar3D)). Use the URLs from the manifest.
+    [`/radar3d`](/operations/getRadar3D)). When the manifest says
+    `flows_rain`, the extra block carries the motion at this frame's time
+    (radar block matching against the previous frame, model wind where no
+    echo is trackable) in the frame's own cells per 5 minutes: apply
+    frame i's vectors to the pair i → i+1. Use the URLs from the manifest.
     """
     ts = _parse_frame_timestamp(timestamp)
     if not await query.radar3d_frame_exists(ctx['pool'], 'rain', ts):

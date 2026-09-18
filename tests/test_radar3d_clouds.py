@@ -106,3 +106,14 @@ def test_forecast_frame_at_blends_like_clouds(model):
     assert flow[0, 0].tolist() == pytest.approx([1.0, 0.0], abs=1e-3)
     rain0, _, _ = model.forecast_frame_at(T0)
     assert rain0[3, 6, 4] == 152
+
+
+def test_flow_block_for_a_finer_frame_scales_vectors():
+    flow = np.zeros((40, 30, 2), np.float32)
+    flow[..., 0] = 1.5                                  # 2 km cells / 5 min
+    crop2 = Crop(2, 20, 3, 13)                          # 18 × 10 on 2 km
+    data = flow_block(
+        flow, crop2, frame_width=20, frame_height=36, scale=2.0)
+    fw, fh, vectors = parse_flow_block(data)
+    assert (fw, fh) == (5, 9)                 # ceil(20/4), ceil(36/4)
+    assert np.allclose(vectors[..., 0], 3.0)            # 1 km cells / 5 min

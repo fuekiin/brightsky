@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 TILTS_PER_SITE = 10
 CYCLE_DIR_FORMAT = '%Y%m%dT%H%MZ'
 CYCLE = datetime.timedelta(minutes=5)
-PRODUCTS = ('rain', 'clouds', 'clouds_flow', 'cells')
+PRODUCTS = ('rain', 'rain_flow', 'clouds', 'clouds_flow', 'cells')
 FORECAST_PRODUCTS = ('forecast_rain', 'forecast_clouds', 'forecast_flow')
 RUN_FORMAT = '%Y%m%dT%HZ'
 
@@ -557,6 +557,10 @@ class Radar3DIngest:
             time.monotonic() - started, int((vol > 0).sum()))
         self.write_cloud_frame(cycle)
         try:
+            self.write_motion(cycle)
+        except Exception:
+            logger.exception('Motion field for %s failed', cycle)
+        try:
             self.write_forecast(cycle)
         except Exception:
             logger.exception('Forecast frames after %s failed', cycle)
@@ -700,6 +704,38 @@ class Radar3DIngest:
     def newest_run(self):
         return max(self.icon_runs) if self.icon_runs else None
 
+    # -- motion -------------------------------------------------------
+
+    def write_motion(self, ts):
+        """The motion field at an observed frame's time (radar block
+        matching against the previous frame, model wind where no echo is
+        trackable, zero without either), in 2 km cells per 5 minutes →
+        `rain_flow/<ts>` [H, W, 2]; shipped with the rain frame and used
+        by the nowcast built on that frame."""
+        cur2 = nowcast.maxpool2(np.asarray(self.store.open('rain', ts)))
+        prev2 = None
+        try:
+            prev2 = nowcast.maxpool2(np.asarray(
+                self.store.open('rain', ts - CYCLE)))
+        except LookupError:
+            pass
+        height, width = cur2.shape[1:]
+        model_u = np.zeros((height, width), np.float32)
+        model_v = np.zeros((height, width), np.float32)
+        with self.clouds_lock:
+            try:
+                _, model_flow = self.clouds._blend(ts, ())
+                model_u, model_v = model_flow[..., 0], model_flow[..., 1]
+            except LookupError:
+                pass
+        u, v, known = nowcast.motion_field(
+            None if prev2 is None else nowcast.column_max(prev2),
+            nowcast.column_max(cur2), model_u, model_v)
+        flow = np.stack([u, v], axis=-1).astype(np.float32)
+        path = self.store.write('rain_flow', ts, flow, dtype=np.float32)
+        self.index('rain_flow', ts, path, None)
+        return flow, known
+
     def write_forecast(self, newest_observed=None):
         """
         Nowcast-blended forecast frames for the next `forecast_minutes`
@@ -727,21 +763,15 @@ class Radar3DIngest:
             return 0
         cur2 = nowcast.maxpool2(cur)
         z_cur = nowcast.bytes_to_z(cur2)
-        prev2 = None
-        try:
-            prev2 = nowcast.maxpool2(np.asarray(
-                self.store.open('rain', newest_observed - CYCLE)))
-        except LookupError:
-            pass
         with self.clouds_lock:
-            try:
-                _, model_flow = self.clouds._blend(newest_observed, ())
-            except LookupError:
+            if not self.clouds.covers(newest_observed):
                 return 0
-        motion_u, motion_v, known = nowcast.motion_field(
-            None if prev2 is None else nowcast.column_max(prev2),
-            nowcast.column_max(cur2), model_flow[..., 0], model_flow[..., 1])
-        flow = np.stack([motion_u, motion_v], axis=-1).astype(np.float32)
+        try:
+            flow = np.asarray(self.store.open('rain_flow', newest_observed))
+            known = True
+        except LookupError:
+            flow, known = self.write_motion(newest_observed)
+        motion_u, motion_v = flow[..., 0], flow[..., 1]
         written = 0
         steps = self.settings['forecast_minutes'] // 5
         for k in range(1, steps + 1):
@@ -769,9 +799,8 @@ class Radar3DIngest:
             written += 1
         if written:
             logger.info(
-                'Wrote %d nowcast frames (run %s, basis %s, motion from %s)',
-                written, run, newest_observed,
-                'radar' if known is not None else 'model wind')
+                'Wrote %d nowcast frames (run %s, basis %s)',
+                written, run, newest_observed)
         self.clean_forecasts(keep=rain_key.split('/', 1)[1])
         return written
 

@@ -974,7 +974,7 @@ async def radar3d(
     rows = await conn.fetch(
         """
         SELECT product, timestamp, sites FROM radar3d_frames
-        WHERE product IN ('rain', 'clouds', 'cells')
+        WHERE product IN ('rain', 'rain_flow', 'clouds', 'cells')
           AND timestamp BETWEEN $1 AND $2
         ORDER BY timestamp
         """,
@@ -1040,6 +1040,9 @@ async def radar3d(
         },
         'frames': frames,
         'flows_clouds': any(f['clouds'] for f in frames),
+        'flows_rain': any(
+            'rain_flow' in available[ts] for ts in available
+            if 'rain' in available[ts]),
         'source': RADAR3D_SOURCE,
     }
 

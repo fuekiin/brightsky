@@ -390,3 +390,14 @@ def test_stale_raw_icon_runs_are_removed(ingest, tmp_path):
     ing.settings['icon_steps'] = 0                   # nothing to load
     ing.poll_icon()
     assert not stale.exists() and not junk.exists()
+
+
+def test_motion_field_is_written_with_each_cycle(ingest, tmp_path):
+    ing, source, indexed = ingest()
+    ing.poll_once()
+    assert [ts for ts, _ in indexed['rain_flow']] == [CYCLE]
+    flow = ing.store.open('rain_flow', CYCLE)
+    L, H, W = ing.cloud_grid.shape
+    assert flow.shape == (H, W, 2) and flow.dtype == np.float32
+    # no previous frame and no model loaded: zero motion, but the field exists
+    assert np.all(flow == 0)

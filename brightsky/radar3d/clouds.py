@@ -131,17 +131,21 @@ class CloudModel:
         return rain, quantise(fields['lwc'], fields['cov']), flow
 
 
-def flow_block(flow, crop, factor=FLOW_FACTOR):
+def flow_block(flow, crop, factor=FLOW_FACTOR, frame_width=None,
+               frame_height=None, scale=1.0):
     """
-    The clouds frame's extra block: `u16 flow_w, u16 flow_h`, then
-    flow_h × flow_w float16 (dx, dy) pairs, row-major, row 0 north,
-    spanning exactly the crop's bounds (one flow cell ≈ `factor` frame
-    cells; the field is bilinearly resampled at the flow cells' centres).
+    A frame's extra block: `u16 flow_w, u16 flow_h`, then flow_h × flow_w
+    float16 (dx, dy) pairs, row-major, row 0 north, spanning exactly the
+    crop's bounds (one flow cell ≈ `factor` frame cells; the field is
+    bilinearly resampled at the flow cells' centres). `flow` and `crop`
+    are on the flow's own grid; a frame on a finer grid passes its own
+    `frame_width`/`frame_height` and the vector `scale` (its cells per
+    flow-grid cell), so the vectors come out in the frame's cells.
     """
     sub = flow[crop.row0:crop.row1, crop.col0:crop.col1]
     height, width = sub.shape[:2]
-    fw = -(-width // factor)
-    fh = -(-height // factor)
+    fw = -(-(frame_width or width) // factor)
+    fh = -(-(frame_height or height) // factor)
     # centres of the coarse cells in the crop's cell coordinates
     xs = (np.arange(fw) + 0.5) * width / fw - 0.5
     ys = (np.arange(fh) + 0.5) * height / fh - 0.5
@@ -157,6 +161,7 @@ def flow_block(flow, crop, factor=FLOW_FACTOR):
         (sub[y0][:, x0] * (1 - tx) + sub[y0][:, x1] * tx) * (1 - ty)
         + (sub[y1][:, x0] * (1 - tx) + sub[y1][:, x1] * tx) * ty
     )
+    coarse = coarse * scale
     return struct.pack('<HH', fw, fh) + coarse.astype('<f2').tobytes()
 
 
