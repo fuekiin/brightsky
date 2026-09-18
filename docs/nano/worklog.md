@@ -394,3 +394,12 @@ built as asked (`radar3d/nowcast.py`, `fb21c77`):
 - Encoding note: `derived: "nowcast: radar extrapolation blended into ICON-D2 Z-M (w = (lead/60)^2; …)"`.
 - Cost: ~12 warps of a 24-slab volume plus the cloud/hydrometeor blends per cycle — ~20–30 s
   per 5-minute cycle on the dev Mac, inside the cadence.
+
+**Nowcast acceptance (local serve, 2026-09-18 05:30–05:45 UTC, 2 km column max, three 150 km
+boxes with echo):** the +5/+10 min frames scored against the observations that arrived at those
+times, vs persistence (basis frame held still) — Jaccard of ≥8 dBZ columns: +5 0.82/0.75/0.77
+vs 0.67/0.50/0.56; +10 0.76/0.70/0.68 vs 0.56/0.35/0.41; ≥20 dBZ: +5 0.69/0.67/0.67 vs
+0.45/0.39/0.34. Max dBZ carried within 1–2 dB at +5. The app session's "+5 vs the basis frame"
+criterion gives 0.52–0.72 because the field moves ~4 km per 5 min (radar motion ≈ 50 km/h
+ENE this morning) — that criterion penalises correct motion. Peak intensity is Lagrangian
+persistence by design (a decaying core stays bright for a while).
