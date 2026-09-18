@@ -328,3 +328,7 @@ moved along its own motion and blended into the model in linear Z.
 - `Radar3DIngest.write_forecast(newest)`: motion → 12 frames (rain nowcast, model clouds via
   `CloudModel._blend`, flow = motion used) under key `<run>-<basis>`; `clean_forecasts` keeps
   the newest two keys. The manifest reports `run` and `basis`; the URL key is opaque to the app.
+- **Motion with the observed frames** (`write_motion`, product `rain_flow`): the same field the
+  nowcast uses, stored per cycle on the 2 km grid and appended to `/radar3d/rain/{ts}` crops as the
+  extra block in the frame's own cells per 5 minutes (`flow_block(..., frame_width, frame_height,
+  scale)`); `flows_rain` on the manifest. Retention like the other products.

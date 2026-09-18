@@ -411,3 +411,17 @@ into the model by +60), deployed at 06:41 UTC with the usual procedure (tag bump
 `up -d worker web radar3d`; no compose/migration change). Record and post-deploy comparison in
 `bright_sky_config` `docs/deploy-2026-09-18-nowcast.md`. Follow-up noted by the app session:
 watch the worker's cycle-to-frames time on the prod box (nowcast ≈ 30–40 s per cycle).
+
+## 2026-09-18 — motion field shipped with the observed rain frames (branch `nano-radar3d-forecast`)
+
+Asked for by the owner via the app session: the app's on-device motion estimate delayed the first
+clean playback loop, and the server already computes the same field per cycle for the nowcast.
+`Radar3DIngest.write_motion(ts)` now runs after every rain cycle (radar block matching against the
+previous frame, model wind where no echo is trackable, zero without either) → `rain_flow/<ts>`
+[456, 349, 2] in 2 km cells per 5 min, indexed as product `rain_flow`; the nowcast reuses it.
+`GET /radar3d/rain/{ts}` appends it as the extra block (`u16 flow_w, u16 flow_h`, float16 pairs,
+`ceil(width/4) × ceil(height/4)`, spanning the crop) **in the frame's own cells per 5 minutes**
+(1 km crops: 2 km vectors × 2; `resolution=2000`: unchanged); frames without a stored field have
+extra length 0. Manifest: top-level `flows_rain`. Semantics: frame i's block is the motion i−1 → i,
+applied by the app to the pair i → i+1 — the same convention the nowcast uses for its basis.
+`flow_block` gained `frame_width`/`frame_height`/`scale` for a frame on a finer grid than the flow.
