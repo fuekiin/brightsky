@@ -290,7 +290,8 @@ The cloud volumes were always a forecast product; this extends the same ICON-D2 
 hour past the observed timeline, in 5-minute frames, for rain and clouds.
 
 - **Rain**: precipitation water `qr+qs+qg` on the model levels → slabs (like the clouds'
-  condensed water) → dBZ bytes via the Z–M relation Z = 2.4e4·M^1.82 (`icon.pwc_to_dbz_bytes`),
+  condensed water) → dBZ bytes via per-hydrometeor Z–M relations summed in linear Z — rain
+  2.4e4·M^1.82, dry snow 1.1e3·M^1.6, graupel 5.0e3·M^1.7 (`icon.hydrometeors_to_dbz_bytes`) —
   so the app's rain shader, legend and intensity words apply unchanged; the manifest's forecast
   `encoding` carries a `derived` note. Model rain at 2 km is smoother than radar: it shows where
   and how high precipitation forms, not the cores.
