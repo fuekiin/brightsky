@@ -355,3 +355,15 @@ per-run bias correction. Inherent residuals: no convective cores in the model (m
 vs 50–60 observed) and a strong dependence on run age (a 4.5 h-old run gave +17 pp in the weak
 band). Boxes that extend beyond radar coverage compare unfairly (the observed frame is empty
 there by construction).
+
+## 2026-09-18 — forecast deployed (sha-5267cbb, tag `nano-v4`)
+
+`nano-radar3d-forecast` fast-forwarded into `nano-health` (`5267cbb`), CI green, deployed at
+04:30 UTC with the same procedure (tag bump, pull, `up -d worker web radar3d`; compose and
+migrations unchanged). Before the deploy: a clean-code pass (116 tests, ruff, one stale doc name),
+new observability in `nano-tooling` — `brightsky/radar3d` reports the forecast block (run age,
+frame count, first frame fetch) and is degraded without it; `brightsky/radar3d-worker` parses
+forecast writes and disk-floor errors; new `brightsky/radar3d-forecast` measures the first
+forecast frame against the newest observed frame (column shares ≥8/20/35 dBZ, degraded beyond
+15 pp) — and a pre-deploy snapshot (`bright_sky_config/docs/pre-deploy-2026-09-18-forecast.md`).
+Record: `bright_sky_config/docs/deploy-2026-09-18-forecast.md`.
