@@ -425,3 +425,11 @@ previous frame, model wind where no echo is trackable, zero without either) → 
 extra length 0. Manifest: top-level `flows_rain`. Semantics: frame i's block is the motion i−1 → i,
 applied by the app to the pair i → i+1 — the same convention the nowcast uses for its basis.
 `flow_block` gained `frame_width`/`frame_height`/`scale` for a frame on a finer grid than the flow.
+
+## 2026-09-18 — motion field deployed (sha-4ceae3b, tag `nano-v6`)
+
+Confirmed by the app session (their block matching vs. the shipped block on a Thuringia 1 km
+crop: median 1.0 cell per 5 min over 119 echo tiles, consistent frame to frame), deployed at
+07:08 UTC with the usual procedure. Record in `bright_sky_config` `docs/deploy-2026-09-18-motion.md`.
+Four deploys today: `nano-v3` rain/clouds/cells, `nano-v4` model forecast, `nano-v5` nowcast,
+`nano-v6` motion field.

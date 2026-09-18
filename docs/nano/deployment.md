@@ -53,11 +53,12 @@ Build pipeline yes, auto-deploy no:
 
 ## radar3d container
 
-Status 2026-09-18 06:41 UTC: **deployed incl. the nowcast forecast.** Production runs
-`ghcr.io/fuekiin/brightsky:sha-633b22c` (`nano-health` tip, tag `nano-v5`) with the third
-container `brightsky-radar3d-1`; records in `bright_sky_config` `docs/deploy-2026-09-18-radar3d.md`
+Status 2026-09-18 07:08 UTC: **deployed incl. the nowcast forecast and the motion field on the
+observed frames.** Production runs `ghcr.io/fuekiin/brightsky:sha-4ceae3b` (`nano-health` tip,
+tag `nano-v6`) with the third container `brightsky-radar3d-1`; records in `bright_sky_config` `docs/deploy-2026-09-18-radar3d.md`
 (rain/clouds/cells, `nano-v3`), `docs/deploy-2026-09-18-forecast.md` (model forecast, `nano-v4`)
-and `docs/deploy-2026-09-18-nowcast.md` (nowcast blend, `nano-v5`).
+`docs/deploy-2026-09-18-nowcast.md` (nowcast blend, `nano-v5`) and
+`docs/deploy-2026-09-18-motion.md` (motion field, `nano-v6`).
 
 The 3D radar pipeline (`docs/nano/architecture.md`, "Radar 3D pipeline") ships in the same
 image but runs as its **own container**, so the ingest worker's CPU bursts stay unaffected.
