@@ -29,11 +29,13 @@ from parsel import Selector
 
 from brightsky.db import get_connection
 from brightsky.radar3d import cells as konrad
-from brightsky.radar3d.clouds import CloudModel
+from brightsky.radar3d import nowcast
+from brightsky.radar3d.clouds import CloudModel, quantise
 from brightsky.radar3d.grid import GERMANY_1KM, GERMANY_2KM
 from brightsky.radar3d.icon import (
     Sampler,
     choose_levels,
+    hydrometeors_to_z,
     grib_name,
     level_heights,
     load_step,
@@ -67,9 +69,29 @@ FORECAST_PRODUCTS = ('forecast_rain', 'forecast_clouds', 'forecast_flow')
 RUN_FORMAT = '%Y%m%dT%HZ'
 
 
-def forecast_product(product, run):
-    """Forecast frames are keyed by run: product 'forecast_rain/<run>'."""
-    return f'{product}/{run:{RUN_FORMAT}}'
+BASIS_FORMAT = '%Y%m%dT%H%MZ'
+
+
+def forecast_product(product, run, basis=None):
+    """Forecast frames are keyed by the model run and the observation they
+    extrapolate: product 'forecast_rain/<run>-<basis>' (URLs stay
+    immutable; a new cycle writes a new key)."""
+    key = f'{run:{RUN_FORMAT}}'
+    if basis is not None:
+        key += f'-{basis:{BASIS_FORMAT}}'
+    return f'{product}/{key}'
+
+
+def parse_forecast_key(key):
+    """'<run>-<basis>' (or a bare '<run>') → (run, basis or None)."""
+    run_part, _, basis_part = key.partition('-')
+    run = datetime.datetime.strptime(run_part, RUN_FORMAT).replace(
+        tzinfo=datetime.UTC)
+    basis = None
+    if basis_part:
+        basis = datetime.datetime.strptime(basis_part, BASIS_FORMAT).replace(
+            tzinfo=datetime.UTC)
+    return run, basis
 # Predicted sweep fetches: start this long after the learned time, give up
 # (and take a listing) this long after it
 PREDICT_AFTER = 20
@@ -679,11 +701,14 @@ class Radar3DIngest:
         return max(self.icon_runs) if self.icon_runs else None
 
     def write_forecast(self, newest_observed=None):
-        """Forecast frames for the next `forecast_minutes` after the newest
-        observed rain frame, every 5 minutes, synthesised like the observed
-        cloud frames (rain via Z–M). Keyed by the newest loaded run so a
-        served frame is never overwritten; a new run rewrites the window
-        under its own key."""
+        """
+        Nowcast-blended forecast frames for the next `forecast_minutes`
+        after the newest observed rain frame, every 5 minutes: the observed
+        volume moved along its estimated motion (Lagrangian persistence),
+        blended in linear Z into the ICON-D2 field with w = (lead/60)²;
+        clouds are the model clouds; the flow block carries the motion used.
+        Keyed by run and basis observation so served URLs never change.
+        """
         run = self.newest_run()
         if run is None:
             return 0
@@ -693,42 +718,69 @@ class Radar3DIngest:
             if not observed:
                 return 0
             newest_observed = max(observed)
-        rain_key = forecast_product('forecast_rain', run)
-        have = self.indexed(rain_key, newest_observed)
+        rain_key = forecast_product('forecast_rain', run, newest_observed)
+        if self.indexed(rain_key, newest_observed):
+            return 0                          # this basis is already done
+        try:
+            cur = np.asarray(self.store.open('rain', newest_observed))
+        except LookupError:
+            return 0
+        cur2 = nowcast.maxpool2(cur)
+        z_cur = nowcast.bytes_to_z(cur2)
+        prev2 = None
+        try:
+            prev2 = nowcast.maxpool2(np.asarray(
+                self.store.open('rain', newest_observed - CYCLE)))
+        except LookupError:
+            pass
+        with self.clouds_lock:
+            try:
+                _, model_flow = self.clouds._blend(newest_observed, ())
+            except LookupError:
+                return 0
+        motion_u, motion_v, known = nowcast.motion_field(
+            None if prev2 is None else nowcast.column_max(prev2),
+            nowcast.column_max(cur2), model_flow[..., 0], model_flow[..., 1])
+        flow = np.stack([motion_u, motion_v], axis=-1).astype(np.float32)
         written = 0
         steps = self.settings['forecast_minutes'] // 5
         for k in range(1, steps + 1):
             ts = newest_observed + k * CYCLE
-            if ts in have:
-                continue
             with self.clouds_lock:
                 try:
-                    rain, rg, flow = self.clouds.forecast_frame_at(ts)
+                    fields, _ = self.clouds._blend(
+                        ts, ('lwc', 'cov', 'qr', 'qs', 'qg'))
                 except LookupError:
                     continue
+            w = nowcast.blend_weight(5 * k, self.settings['forecast_minutes'])
+            z_model = hydrometeors_to_z(
+                fields['qr'], fields['qs'], fields['qg'])
+            z_obs = nowcast.advect_z(z_cur, motion_u, motion_v, k)
+            rain = nowcast.z_to_bytes(nowcast.blend_z(z_obs, z_model, w))
+            rg = quantise(fields['lwc'], fields['cov'])
             path = self.store.write(rain_key, ts, rain)
-            self.store.write(forecast_product('forecast_clouds', run), ts, rg)
-            self.store.write(forecast_product('forecast_flow', run), ts, flow,
-                             dtype=np.float32)
+            self.store.write(
+                forecast_product('forecast_clouds', run, newest_observed),
+                ts, rg)
+            self.store.write(
+                forecast_product('forecast_flow', run, newest_observed),
+                ts, flow, dtype=np.float32)
             self.index(rain_key, ts, path, None)
             written += 1
         if written:
-            logger.info('Wrote %d forecast frames (run %s) after %s',
-                        written, run, newest_observed)
-        self.clean_forecasts(keep=run)
+            logger.info(
+                'Wrote %d nowcast frames (run %s, basis %s, motion from %s)',
+                written, run, newest_observed,
+                'radar' if known is not None else 'model wind')
+        self.clean_forecasts(keep=rain_key.split('/', 1)[1])
         return written
 
-    def _index_runs(self):
-        """Forecast runs known to the index (files may be gone)."""
-        runs = set()
-        for key in self.indexed_forecast_products():
-            try:
-                run = datetime.datetime.strptime(
-                    key.split('/', 1)[1], RUN_FORMAT)
-            except (IndexError, ValueError):
-                continue
-            runs.add(run.replace(tzinfo=datetime.UTC))
-        return runs
+    def _index_keys(self):
+        """Forecast keys ('<run>-<basis>') known to the index."""
+        return {
+            key.split('/', 1)[1] for key in self.indexed_forecast_products()
+            if '/' in key
+        }
 
     def indexed_forecast_products(self):
         if self.index != self._index_db:
@@ -737,39 +789,24 @@ class Radar3DIngest:
             return indexed_products(conn, 'forecast_rain/')
 
     def clean_forecasts(self, keep):
-        """Drop every forecast run but the newest one and `keep` — files
-        and index rows, whichever of the two still exists."""
-        runs = self._index_runs()
+        """Keep the newest two forecast keys (and `keep`); drop the rest —
+        files and index rows, whichever of the two still exists."""
+        keys = self._index_keys()
         for product in FORECAST_PRODUCTS:
             base = self.store.root / product
             if base.is_dir():
-                for path in base.iterdir():
-                    try:
-                        run = datetime.datetime.strptime(path.name, RUN_FORMAT)
-                    except ValueError:
-                        continue
-                    runs.add(run.replace(tzinfo=datetime.UTC))
-        keepers = {keep, max(runs)} if runs else {keep}
-        cutoff = self.now() - datetime.timedelta(
-            hours=self.settings['retention_hours'])
-        for run in keepers:
+                keys |= {p.name for p in base.iterdir() if p.is_dir()}
+        keepers = set(sorted(keys)[-2:]) | {keep}
+        for key in keys - keepers:
             for product in FORECAST_PRODUCTS:
-                key = forecast_product(product, run)
-                self.store.delete_before(key, cutoff)
+                shutil.rmtree(self.store.root / product / key,
+                              ignore_errors=True)
             if self.index == self._index_db:
                 with get_connection() as conn:
                     delete_index_before(
-                        conn, forecast_product('forecast_rain', run), cutoff)
-        for run in runs - keepers:
-            for product in FORECAST_PRODUCTS:
-                run_dir = self.store.root / product / f'{run:{RUN_FORMAT}}'
-                shutil.rmtree(run_dir, ignore_errors=True)
-            if self.index == self._index_db:
-                with get_connection() as conn:
-                    delete_index_before(
-                        conn, forecast_product('forecast_rain', run),
+                        conn, f'forecast_rain/{key}',
                         datetime.datetime.max.replace(tzinfo=datetime.UTC))
-            logger.info('Dropped forecast run %s', run)
+            logger.info('Dropped forecast key %s', key)
 
     def backfill_clouds(self):
         now, since = self.window()

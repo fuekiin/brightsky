@@ -791,21 +791,21 @@ def _clouds_crop_bytes(timestamp, bbox):
     return frame.encode(voxels, channels=2, extra=flow_block(flow, crop))
 
 
-def _parse_run(value):
+def _parse_forecast_key(value):
+    from brightsky.radar3d.ingest import parse_forecast_key
     try:
-        run = datetime.datetime.strptime(value, '%Y%m%dT%HZ')
+        parse_forecast_key(value)
     except ValueError:
-        raise HTTPException(status_code=422, detail="Invalid run stamp")
-    return run.replace(tzinfo=datetime.UTC)
+        raise HTTPException(status_code=422, detail="Invalid forecast key")
+    return value
 
 
-def _forecast_crop_bytes(product, run, timestamp, bbox):
+def _forecast_crop_bytes(product, key, timestamp, bbox):
     from brightsky.radar3d import frame
     from brightsky.radar3d.clouds import flow_block
     from brightsky.radar3d.grid import GERMANY_2KM, OutsideGrid
     from brightsky.radar3d.store import FrameMissing, FrameStore
     store = FrameStore(settings.RADAR3D_DATA_DIR)
-    key = f'{run:%Y%m%dT%HZ}'
     try:
         crop = GERMANY_2KM.crop(*bbox)
         voxels = store.crop(f'forecast_{product}/{key}', timestamp, crop)
@@ -911,22 +911,24 @@ async def radar3d_forecast(
     q: Annotated[Radar3DBBoxParams, Query()],
 ):
     """
-    One 5-minute forecast frame synthesised from an ICON-D2 run, cropped to
-    `bbox`, as a `NANO3D` binary on the 2 km cloud grid: `rain` is one
-    channel with the observed rain encoding (`dBZ = v × 0.5 − 32`) derived
-    from the model's precipitation water via a Z–M relation; `clouds` is
-    the two-channel cloud frame. Both carry the flow block (model wind, in
-    cloud-grid cells per 5 minutes). Use the URLs from the manifest's
-    `forecast` block.
+    One 5-minute forecast frame, cropped to `bbox`, as a `NANO3D` binary
+    on the 2 km cloud grid. `rain` is a nowcast: the newest observed volume
+    moved along its estimated motion and blended in linear Z into the
+    ICON-D2 field (model weight (lead/60)²), in the observed rain encoding
+    (`dBZ = v × 0.5 − 32`); `clouds` is the two-channel model cloud frame.
+    Both carry the flow block with the motion used for the extrapolation
+    (cloud-grid cells per 5 minutes). Use the URLs from the manifest's
+    `forecast` block; the path's key names the model run and the basis
+    observation.
     """
-    run_ts = _parse_run(run)
+    key = _parse_forecast_key(run)
     ts = _parse_frame_timestamp(timestamp)
     exists = await query.radar3d_frame_exists(
-        ctx['pool'], f'forecast_rain/{run}', ts)
+        ctx['pool'], f'forecast_rain/{key}', ts)
     if not exists:
-        raise query.NoData(f"No forecast frame {run}/{timestamp}")
+        raise query.NoData(f"No forecast frame {key}/{timestamp}")
     data = await run_in_threadpool(
-        _forecast_crop_bytes, product, run_ts, ts, q.bbox)
+        _forecast_crop_bytes, product, key, ts, q.bbox)
     return Response(
         content=data,
         media_type='application/octet-stream',

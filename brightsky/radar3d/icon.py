@@ -175,10 +175,10 @@ class StepFields:
     qg: np.ndarray = None  # graupel
 
 
-def hydrometeors_to_dbz_bytes(qr, qs, qg):
-    """Rain, snow and graupel water contents (g/m³) → the rain frames'
-    byte encoding (dBZ = v × 0.5 − 32, 0 = no echo): per-hydrometeor Z–M
-    relations summed in linear Z."""
+def hydrometeors_to_z(qr, qs, qg):
+    """Rain, snow and graupel water contents (g/m³) → linear reflectivity
+    Z (mm⁶/m³) via per-hydrometeor Z–M relations summed; 0 below the
+    total-mass floor."""
     total = np.zeros(np.shape(qr), np.float32)
     z = np.zeros(np.shape(qr), np.float32)
     for name, m in (('qr', qr), ('qs', qs), ('qg', qg)):
@@ -186,10 +186,17 @@ def hydrometeors_to_dbz_bytes(qr, qs, qg):
         a, b = ZM[name]
         z += a * np.power(m, b)
         total += m
+    z[total < PWC_FLOOR] = 0.0
+    return z
+
+
+def hydrometeors_to_dbz_bytes(qr, qs, qg):
+    """→ the rain frames' byte encoding (dBZ = v × 0.5 − 32, 0 = no echo)."""
+    z = hydrometeors_to_z(qr, qs, qg)
     with np.errstate(divide='ignore'):
         dbz = 10.0 * np.log10(np.maximum(z, 1e-6))
     out = np.clip(np.round((dbz + 32.0) * 2.0), 1, 255).astype(np.uint8)
-    out[total < PWC_FLOOR] = 0
+    out[z <= 0.0] = 0
     return out
 
 

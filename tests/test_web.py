@@ -1253,7 +1253,7 @@ def radar3d_forecast(radar3d_all_products, db):
     from brightsky.radar3d.grid import GERMANY_2KM
     store = radar3d_all_products
     run = datetime.datetime(2026, 9, 16, 9, tzinfo=tzutc())
-    key = f'{run:%Y%m%dT%HZ}'
+    key = f'{run:%Y%m%dT%HZ}-{RADAR3D_TS:%Y%m%dT%H%MZ}'
     L, H, W = GERMANY_2KM.shape
     crop = GERMANY_2KM.around(52.52, 13.41, 5000)
     # 5-minute forecast stamps around the newest observed frame (12:10)
@@ -1277,18 +1277,22 @@ def test_radar3d_manifest_forecast_block(radar3d_forecast, api):
     fc = data['forecast']
     assert data['flows_forecast'] is True
     assert fc['run'] == '2026-09-16T09:00:00+00:00'
+    assert fc['basis'] == '2026-09-16T12:00:00+00:00'
     # newest observed frame is 12:10 → only the stamps after it
     assert [(f['timestamp'][11:16], f['lead_min']) for f in fc['frames']] == \
         [('12:15', 5), ('12:20', 10)]
     f = fc['frames'][0]
     assert f['rain'].startswith(
-        '/radar3d/forecast/rain/20260916T09Z/2026-09-16T12:15:00Z?bbox=')
-    assert f['clouds'].startswith('/radar3d/forecast/clouds/20260916T09Z/')
+        '/radar3d/forecast/rain/20260916T09Z-20260916T1200Z/'
+        '2026-09-16T12:15:00Z?bbox=')
+    assert f['clouds'].startswith(
+        '/radar3d/forecast/clouds/20260916T09Z-20260916T1200Z/')
     assert f['cells'] is None
     g, gc = fc['grid'], data['grid_clouds']
     assert (g['width'], g['height'], g['min_lat']) == \
         (gc['width'], gc['height'], gc['min_lat'])
-    assert g['encoding']['unit'] == 'dBZ' and 'Z-M' in g['encoding']['derived']
+    assert g['encoding']['unit'] == 'dBZ'
+    assert 'nowcast' in g['encoding']['derived']
     assert g['channels'] == 1 and g['resolution'] == 2000
 
 
@@ -1311,9 +1315,9 @@ def test_radar3d_forecast_frames(radar3d_forecast, api):
         api.get(f['clouds']).content)
     assert header2['channels'] == 2 and voxels2[6, :, :, 1].max() == 62
     assert len(extra2) == len(extra)
-    assert api.get('/radar3d/forecast/rain/20260916T09Z/2026-09-16T20:00:00Z'
-                   '?bbox=52,53,13,14').status_code == 404
-    assert api.get('/radar3d/forecast/snow/20260916T09Z/2026-09-16T12:15:00Z'
-                   '?bbox=52,53,13,14').status_code == 422
+    assert api.get('/radar3d/forecast/rain/20260916T09Z-20260916T1200Z/'
+                   '2026-09-16T20:00:00Z?bbox=52,53,13,14').status_code == 404
+    assert api.get('/radar3d/forecast/snow/20260916T09Z-20260916T1200Z/'
+                   '2026-09-16T12:15:00Z?bbox=52,53,13,14').status_code == 422
     assert api.get('/radar3d/forecast/rain/yesterday/2026-09-16T12:15:00Z'
                    '?bbox=52,53,13,14').status_code == 422

@@ -1046,8 +1046,9 @@ async def radar3d(
 
 RADAR3D_FORECAST_ENCODING = {
     'scale': 0.5, 'offset': -32.0, 'nodata': 0, 'unit': 'dBZ',
-    'derived': ('Z-M from ICON-D2 hydrometeors, summed in linear Z: '
-                'rain 2.4e4 M^1.82, snow 1.1e3 M^1.6, graupel 5.0e3 M^1.7')}
+    'derived': ('nowcast: radar extrapolation blended into ICON-D2 Z-M '
+                '(w = (lead/60)^2; rain 2.4e4 M^1.82, snow 1.1e3 M^1.6, '
+                'graupel 5.0e3 M^1.7)')}
 
 
 async def _radar3d_forecast(conn, grid, crop, bounds, bbox, newest_observed):
@@ -1061,10 +1062,10 @@ async def _radar3d_forecast(conn, grid, crop, bounds, bbox, newest_observed):
         """)
     if not rows:
         return None
+    from brightsky.radar3d.ingest import parse_forecast_key
     newest_key = rows[0]['product']
-    run_stamp = newest_key.split('/', 1)[1]
-    run = datetime.datetime.strptime(run_stamp, '%Y%m%dT%HZ').replace(
-        tzinfo=datetime.UTC)
+    key = newest_key.split('/', 1)[1]
+    run, basis = parse_forecast_key(key)
     frames = []
     for row in rows:
         if row['product'] != newest_key:
@@ -1077,14 +1078,15 @@ async def _radar3d_forecast(conn, grid, crop, bounds, bbox, newest_observed):
             'timestamp': ts,
             'lead_min': int((ts - newest_observed).total_seconds() // 60)
             if newest_observed is not None else None,
-            'rain': f'/radar3d/forecast/rain/{run_stamp}/{stamp}{bbox}',
-            'clouds': f'/radar3d/forecast/clouds/{run_stamp}/{stamp}{bbox}',
+            'rain': f'/radar3d/forecast/rain/{key}/{stamp}{bbox}',
+            'clouds': f'/radar3d/forecast/clouds/{key}/{stamp}{bbox}',
             'cells': None,
         })
     if not frames:
         return None
     return {
         'run': run,
+        'basis': basis,
         'grid': {
             'width': crop.width // 2,
             'height': crop.height // 2,

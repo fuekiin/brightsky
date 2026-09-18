@@ -302,7 +302,7 @@ def test_icon_run_produces_cloud_frames_on_rain_stamps(
     assert indexed['clouds'][-1] == (CYCLE, None)
 
 
-def test_forecast_window_after_the_newest_observed_frame(
+def test_nowcast_forecast_after_the_newest_observed_frame(
         ingest, monkeypatch, tmp_path):
     ing, source, indexed = ingest(now=CYCLE + datetime.timedelta(minutes=5))
     ing.icon_source = FakeIcon()
@@ -328,22 +328,35 @@ def test_forecast_window_after_the_newest_observed_frame(
     assert ing.icon_source.vars == {'qc', 'qi', 'qs', 'qg', 'qr', 'clc',
                                     'u', 'v'}
     newest = max(ing.icon_runs)
-    key = f'forecast_rain/{newest:%Y%m%dT%HZ}'
+    key = f'forecast_rain/{newest:%Y%m%dT%HZ}-{CYCLE:%Y%m%dT%H%MZ}'
     stamps = [ts for ts, _ in indexed[key]]
     # 09 UTC run covers 10:00–12:00: 11:55 and 12:00 lie inside, 12:05 not
     assert stamps == [CYCLE + k * CYCLE_LEN for k in (1, 2)]
     rain = ing.store.open(key, stamps[0])
-    assert rain.shape == (L, H, W) and rain[4, 10, 10] == 152
-    assert (ing.store.root / f'forecast_clouds/{newest:%Y%m%dT%HZ}').is_dir()
-    # the older run's frames were dropped; a second poll writes nothing new
+    assert rain.shape == (L, H, W)
+    # +5 min (model weight 1/144): the observed echo persists where the
+    # radar had it, and the model's 1 g/m³ blob shows only faintly
+    from brightsky.radar3d import nowcast
+    obs = np.load(tmp_path / 'frames' / 'rain' / '20260916T1150Z.npy')
+    obs2 = nowcast.column_max(nowcast.maxpool2(obs))
+    assert (nowcast.column_max(rain) > 0).sum() > 0.8 * (obs2 > 0).sum()
+    assert 0 < rain[4, 10, 10] < 152
+    later = ing.store.open(key, stamps[1])       # +10 min: blob brighter
+    assert rain[4, 10, 10] < later[4, 10, 10] < 152
+    flow = ing.store.open(
+        f'forecast_flow/{newest:%Y%m%dT%HZ}-{CYCLE:%Y%m%dT%H%MZ}', stamps[0])
+    assert flow.shape == (H, W, 2)               # the motion used
+    assert (ing.store.root / f'forecast_clouds/{key.split("/")[1]}').is_dir()
+    # the older run's frames were dropped; the same basis is not redone
     older = min(ing.icon_runs)
-    assert not (ing.store.root / f'forecast_rain/{older:%Y%m%dT%HZ}').exists()
+    assert not list((ing.store.root / 'forecast_rain').glob(
+        f'{older:%Y%m%dT%HZ}-*'))
     assert ing.write_forecast(CYCLE) == 0
-    # the next observed cycle: 12:00 exists, 12:05 is beyond the run
-    assert ing.write_forecast(CYCLE + CYCLE_LEN) == 0
-    # a run known only to the index (files gone) is dropped as well
+    # keys known only to the index (files gone) are dropped as well: the
+    # newest two survive, older ones go
     ing.indexed_forecast_products = lambda: {
-        'forecast_rain/20260901T00Z', key}
+        'forecast_rain/20260901T00Z-20260901T0000Z',
+        'forecast_rain/20260901T03Z-20260901T0300Z', key}
     dropped = []
     ing.index = lambda *a: None
     ing._index_db = ing.index                    # pretend the DB path
@@ -351,8 +364,9 @@ def test_forecast_window_after_the_newest_observed_frame(
                         lambda: _FakeConn(dropped))
     monkeypatch.setattr(ingest_module, 'delete_index_before',
                         lambda conn, product, cutoff: dropped.append(product))
-    ing.clean_forecasts(keep=newest)
-    assert 'forecast_rain/20260901T00Z' in dropped
+    ing.clean_forecasts(keep=key.split('/', 1)[1])
+    assert 'forecast_rain/20260901T00Z-20260901T0000Z' in dropped
+    assert 'forecast_rain/20260901T03Z-20260901T0300Z' not in dropped
 
 
 def test_disk_floor_stops_downloads(ingest):

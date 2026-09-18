@@ -1113,8 +1113,12 @@ class Radar3DForecastFrame(ResponseModel):
 
 class Radar3DForecast(ResponseModel):
     run: datetime.datetime = Field(
-        description="ICON-D2 run the frames come from",
+        description="ICON-D2 run the frames blend into",
         examples=["2026-09-17T15:00:00+00:00"])
+    basis: datetime.datetime = Field(
+        default=None,
+        description="The observed rain frame the nowcast extrapolates (the newest at the time of writing)",  # noqa
+        json_schema_extra={'nullable': True})
     grid: Radar3DGrid = Field(
         description="2 km grid with the same bounds as `grid_clouds`; rain encoding is dBZ derived from the model's precipitation water")  # noqa
     frames: list[Radar3DForecastFrame]
