@@ -403,3 +403,11 @@ vs 0.67/0.50/0.56; +10 0.76/0.70/0.68 vs 0.56/0.35/0.41; ≥20 dBZ: +5 0.69/0.67
 criterion gives 0.52–0.72 because the field moves ~4 km per 5 min (radar motion ≈ 50 km/h
 ENE this morning) — that criterion penalises correct motion. Peak intensity is Lagrangian
 persistence by design (a decaying core stays bright for a while).
+
+## 2026-09-18 — nowcast deployed (sha-633b22c, tag `nano-v5`)
+
+Confirmed by the app session from the app (bands displaced with cores intact at +25 min, faded
+into the model by +60), deployed at 06:41 UTC with the usual procedure (tag bump, pull,
+`up -d worker web radar3d`; no compose/migration change). Record and post-deploy comparison in
+`bright_sky_config` `docs/deploy-2026-09-18-nowcast.md`. Follow-up noted by the app session:
+watch the worker's cycle-to-frames time on the prod box (nowcast ≈ 30–40 s per cycle).
