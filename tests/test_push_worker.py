@@ -218,3 +218,152 @@ def test_forecast_rule_fires_once_per_night(push_db, monkeypatch):
     assert payload['nano']['evidence'] == {
         'values': {'temp': -2.0}, 'day': 'morgen', 'time': 'gegen 5 Uhr'}
     assert payload['nano']['occurrence'] == f'rule:{WARN_RULE}:2026-09-23'
+
+
+# MARK: - Live Activities
+
+RAIN_RULE = '00000000-0000-0000-0000-0000000000b1'
+
+
+def rain_rule(live_=True):
+    r = {'id': RAIN_RULE, 'kind': 'rain_nowcast', 'cellKey': CELL,
+         'params': {'all': [{'rain': {}}], 'window': {'nextHours': 1}}}
+    if live_:
+        r['live'] = {'night': False}
+    return r
+
+
+def register_live(rules, push_to_start='cd' * 32):
+    async def fn(worker, pool):
+        async with pool.acquire() as conn:
+            await store.register(conn, {
+                'deviceId': DEVICE, 'apnsToken': 'ab' * 32,
+                'pushToStartToken': push_to_start,
+                'environment': 'sandbox', 'liveActivitiesEnabled': True,
+                'rules': rules}, None, NOW)
+            await conn.execute(
+                'UPDATE push.cells SET warn_cell_id = $1, resolved_at = $2',
+                WARN_CELL, NOW)
+    return fn
+
+
+def radar(monkeypatch, mm):
+    from brightsky.push import live
+
+    async def fetch(self, lat, lon, now):
+        return [live.Point(NOW + i * datetime.timedelta(minutes=5), v)
+                for i, v in enumerate(mm)]
+    monkeypatch.setattr(sources.NowcastSource, 'fetch', fetch)
+
+
+def ntick(at):
+    async def fn(worker, pool):
+        return await worker.nowcast_tick(at)
+    return fn
+
+
+def report_token(push_db, token='ef' * 32):
+    with push_db.cursor() as cur:
+        cur.execute("UPDATE push.live_activities SET activity_token = %s, "
+                    "activity_id = 'X'", (token,))
+    push_db.commit()
+
+
+def bodies(stub):
+    return [(r.headers['apns-push-type'], r.url.path.rsplit('/', 1)[1][:2],
+             json.loads(r.content)) for r in stub.requests]
+
+
+def test_rain_activity_starts_updates_quietly_and_ends(push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([rain_rule()]), stub, monkeypatch)
+    radar(monkeypatch, [0.2 if 4 <= i <= 12 else 0 for i in range(24)])
+    run(push_db, ntick(NOW), stub, monkeypatch)
+    [(push_type, token, payload)] = bodies(stub)
+    assert (push_type, token) == ('liveactivity', 'cd')
+    aps = payload['aps']
+    assert aps['event'] == 'start'
+    assert aps['alert']['body'] == 'Regen in 20 Min.'
+    assert 'sound' not in aps['alert']            # > 15 min away: silent
+    state = aps['content-state']
+    assert state['ruleId'] == RAIN_RULE and state['placeName'] == ''
+    assert state['phase']['rain']['_0']['state'] == 'coming'
+    # No ordinary notification on top of the activity.
+    assert all(r.headers['apns-push-type'] == 'liveactivity'
+               for r in stub.requests)
+    report_token(push_db)
+    # Same forecast five minutes later: nothing moved, nothing sent.
+    run(push_db, ntick(NOW + datetime.timedelta(minutes=5)), stub,
+        monkeypatch)
+    assert len(stub.requests) == 1
+    # Dry for two hours: end with a dismissal date, cooldown starts.
+    radar(monkeypatch, [0] * 24)
+    run(push_db, ntick(NOW + datetime.timedelta(minutes=10)), stub,
+        monkeypatch)
+    push_type, token, payload = bodies(stub)[-1]
+    assert (push_type, token, payload['aps']['event']) == (
+        'liveactivity', 'ef', 'end')
+    assert payload['aps']['dismissal-date'] > payload['aps']['timestamp']
+    [(cooldown,)] = push_db.fetch(
+        'SELECT cooldown_until IS NOT NULL FROM push.live_activities')
+    assert cooldown
+
+
+def test_rain_without_push_to_start_is_a_notification(push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([rain_rule()], push_to_start=None), stub,
+        monkeypatch)
+    radar(monkeypatch, [0.2 if 4 <= i <= 12 else 0 for i in range(24)])
+    run(push_db, ntick(NOW), stub, monkeypatch)
+    [(push_type, _, payload)] = bodies(stub)
+    assert push_type == 'alert'
+    assert payload['aps']['alert'] == {'title': 'Regen zieht auf',
+                                       'body': 'Regen in der Nähe erwartet'}
+    assert payload['nano']['evidence']['rain'] == {
+        'startsInMinutes': 20, 'durationMinutes': 45}
+    # The same shower next cycle: no second notification.
+    run(push_db, ntick(NOW + datetime.timedelta(minutes=5)), stub,
+        monkeypatch)
+    assert len(stub.requests) == 1
+
+
+def test_warning_takes_over_escalates_and_is_cancelled(push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([
+        rain_rule(), warning_rule(WARN_RULE, live={'night': False})]),
+        stub, monkeypatch)
+    radar(monkeypatch, [0.2] * 24)
+    run(push_db, ntick(NOW), stub, monkeypatch)
+    assert bodies(stub)[-1][2]['aps']['event'] == 'start'
+    report_token(push_db)
+    add_alert(push_db, 'A', 'moderate')
+    run(push_db, tick(NOW + datetime.timedelta(minutes=1)), stub,
+        monkeypatch)
+    push_type, token, payload = bodies(stub)[-1]
+    assert (token, payload['aps']['event']) == ('ef', 'update')
+    phase = payload['aps']['content-state']['phase']
+    assert phase['warning']['_0']['stage'] == 'upcoming'
+    assert len(stub.requests) == 2    # no notification alongside
+    # Rain does not take it back while the warning runs.
+    run(push_db, ntick(NOW + datetime.timedelta(minutes=5)), stub,
+        monkeypatch)
+    assert len(stub.requests) == 2
+    # Re-issued and escalated: update with alert.
+    push_db.fetch("DELETE FROM alerts WHERE alert_id = 'A' RETURNING id")
+    add_alert(push_db, 'B', 'severe')
+    run(push_db, tick(NOW + datetime.timedelta(minutes=6)), stub,
+        monkeypatch)
+    payload = bodies(stub)[-1][2]
+    assert payload['aps']['event'] == 'update'
+    assert payload['aps']['alert']['title'] == 'Unwetterwarnung'
+    w = payload['aps']['content-state']['phase']['warning']['_0']
+    assert (w['level'], w['escalatedFrom']) == (3, 2)
+    # Cancelled: „aufgehoben", then end.
+    push_db.fetch("DELETE FROM alerts WHERE alert_id = 'B' RETURNING id")
+    add_alert(push_db, 'OTHER', 'minor', event='NEBEL')
+    run(push_db, tick(NOW + datetime.timedelta(minutes=7)), stub,
+        monkeypatch)
+    payload = bodies(stub)[-1][2]
+    assert payload['aps']['event'] == 'end'
+    assert payload['aps']['content-state']['phase']['warning']['_0'][
+        'stage'] == 'cancelled'

@@ -11,8 +11,8 @@ import logging
 import signal
 
 from brightsky.push import (
-    apns, dispatcher, evaluator as ev, firing, rules as rulemod, sender,
-    sources, store,
+    apns, dispatcher, evaluator as ev, firing, live, livectl,
+    rules as rulemod, sender, sources, store,
 )
 
 
@@ -49,7 +49,8 @@ def rule_from_row(row):
 
 RULES_SQL = """
     SELECT r.*, c.lat, c.lon, c.warn_cell_id,
-           d.id AS d_id, d.apns_token, d.environment
+           d.id AS d_id, d.apns_token, d.environment,
+           d.push_to_start_token, d.live_activities_enabled
     FROM push.rules r
     JOIN push.cells c USING (cell_key)
     JOIN push.devices d ON d.id = r.device_id
@@ -71,7 +72,29 @@ async def load_states(conn, rule_ids):
 
 def device_of(row):
     return {'id': row['d_id'], 'apns_token': row['apns_token'],
-            'environment': row['environment']}
+            'environment': row['environment'],
+            'push_to_start_token': row['push_to_start_token'],
+            'live_activities_enabled': row['live_activities_enabled']}
+
+
+RUNNING_SQL = """
+    SELECT la.*, c.warn_cell_id, c.lat, c.lon, r.cell_key,
+           d.id AS d_id, d.apns_token, d.environment,
+           d.push_to_start_token, d.live_activities_enabled
+    FROM push.live_activities la
+    JOIN push.devices d ON d.id = la.device_id
+    LEFT JOIN push.rules r ON r.id = la.rule_id
+    LEFT JOIN push.cells c ON c.cell_key = r.cell_key
+    WHERE la.ended_at IS NULL AND la.phase = $1
+"""
+
+
+def drop_carried(decided, carried):
+    """A live event the activity carries needs no notification: the
+    start or update push is the notification."""
+    for rule, row, decision in decided:
+        decision.fires = [f for f in decision.fires
+                          if (str(row['d_id']), f.event_key) not in carried]
 
 
 async def dispatch_all(conn, client, decided, now):
@@ -92,6 +115,7 @@ class Worker:
         self.client = client
         self.warnings = sources.WarningsSource(http)
         self.forecast = sources.ForecastSource(http)
+        self.nowcast = sources.NowcastSource(http)
 
     # MARK: warnings
 
@@ -125,6 +149,7 @@ class Worker:
                     if obs.lookup(r['warn_cell_id'])]
             states = await load_states(conn, [r['id'] for r in rows])
             decided = []
+            candidates = {}
             for row in rows:
                 rule = rule_from_row(row)
                 hours = []
@@ -135,9 +160,58 @@ class Worker:
                 decision = firing.decide_warnings(
                     rule, matches, states.get(rule.id, {}), now)
                 decided.append((rule, row, decision))
+                if row['live'] is not None:
+                    self.warning_candidates(
+                        candidates, rule, row, matches,
+                        states.get(rule.id, {}), decision, now)
+            carried = await self.live_warnings(conn, candidates, obs, now)
+            drop_carried(decided, carried)
             await dispatch_all(conn, self.client, decided, now)
             await store.mark_source(conn, 'warnings', now)
         return len(rows)
+
+    @staticmethod
+    def warning_candidates(candidates, rule, row, matches, states, decision,
+                           now):
+        threads = {k: v['state'] for k, v in states.items()}
+        threads.update({k: w[0] for k, w in decision.writes.items()})
+        for m in matches:
+            w = m.warning
+            if w.onset > now + live.LIVE_LEAD:
+                continue
+            thread = next((k for k, t in threads.items()
+                           if k.startswith('dwd:')
+                           and w.id in t.get('alert_ids', ())), None)
+            context = None
+            if m.evidence.values:
+                context = ev.context_phrase(rule.values, [
+                    ev.Held(c.metric, m.evidence.values[c.metric], now)
+                    for c in rule.values])
+            candidates.setdefault(str(row['d_id']), (row, []))[1].append(
+                live.Candidate('warning', rule.id, w.onset, level=w.level,
+                               warning=w, context=context, thread=thread))
+
+    async def live_warnings(self, conn, candidates, obs, now):
+        """Each device's one activity against its live warning rules.
+        Returns {(device id, event key)} the activity carries."""
+        running = {str(r['d_id']): r
+                   for r in await conn.fetch(RUNNING_SQL, 'warning')}
+        carried = set()
+        for device_id in set(candidates) | set(running):
+            row, cands = candidates.get(device_id, (None, []))
+            device = device_of(row or running[device_id])
+            winner = live.winner(cands, now)
+            present = True
+            if device_id in running:
+                r = running[device_id]
+                family = r['state'].get('family')
+                present = any(
+                    w.family == family and w.end > now
+                    for w in obs.lookup(r['warn_cell_id']))
+            if await livectl.warning_tick(conn, self.client, device, winner,
+                                          present, now) and winner:
+                carried.add((device_id, f'dwd:{winner.warning.id}'))
+        return carried
 
     # MARK: forecast
 
@@ -185,6 +259,72 @@ class Worker:
             if cells and len(failed) == len(cells):
                 raise RuntimeError('every forecast lookup failed')
             await store.mark_source(conn, 'forecast', now)
+        return len(rows)
+
+    # MARK: nowcast
+
+    async def nowcast_tick(self, now):
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(RULES_SQL, 'rain_nowcast')
+            running = {str(r['d_id']): r
+                       for r in await conn.fetch(RUNNING_SQL, 'rain')}
+        cells = {r['cell_key']: (r['lat'], r['lon']) for r in rows}
+        for r in running.values():
+            if r['cell_key']:
+                cells.setdefault(r['cell_key'], (r['lat'], r['lon']))
+        points = {}
+        semaphore = asyncio.Semaphore(FORECAST_CONCURRENCY)
+
+        async def fetch(cell_key, lat, lon):
+            async with semaphore:
+                try:
+                    points[cell_key] = await self.nowcast.fetch(lat, lon,
+                                                                now)
+                except Exception as e:
+                    logger.warning('Nowcast for %s failed: %r', cell_key, e)
+        await asyncio.gather(*(fetch(k, *ll) for k, ll in cells.items()))
+        if cells and not points:
+            raise RuntimeError('every nowcast lookup failed')
+        async with self.pool.acquire() as conn:
+            states = await load_states(conn, [r['id'] for r in rows])
+            decided = []
+            candidates = {}
+            for row in rows:
+                if row['cell_key'] not in points:
+                    continue
+                rule = rule_from_row(row)
+                device_id = str(row['d_id'])
+                rain = live.analyze_rain(points[row['cell_key']], now,
+                                         in_phase=device_id in running)
+                hours = (await self.hours_for(row, now)
+                         if rule.values else [])
+                match = ev.rain_match(rule, rain, hours, now)
+                decision = firing.decide_rain(
+                    rule, match, states.get(rule.id, {}), now)
+                decided.append((rule, row, decision))
+                if row['live'] is not None and rain is not None:
+                    candidates.setdefault(device_id, (row, []))
+                    soon = rain.state == 'raining' or (
+                        rain.first_rain_at is not None
+                        and rain.first_rain_at <= now + live.START_WITHIN)
+                    gated = rule.values and match is None
+                    if soon and not gated:
+                        candidates[device_id][1].append(live.Candidate(
+                            'rain', rule.id, rain.first_rain_at or now,
+                            rain=rain, context=match and match.context))
+            carried = set()
+            for device_id in set(candidates) | set(running):
+                row, cands = candidates.get(device_id, (None, []))
+                device = device_of(row or running[device_id])
+                winner = live.winner(cands, now)
+                if await livectl.rain_tick(conn, self.client, device,
+                                           winner, now):
+                    for rule, r, _ in decided:
+                        if str(r['d_id']) == device_id and r['live']:
+                            carried.add((device_id, f'rain:{rule.id}'))
+            drop_carried(decided, carried)
+            await dispatch_all(conn, self.client, decided, now)
+            await store.mark_source(conn, 'nowcast', now)
         return len(rows)
 
     # MARK: housekeeping
@@ -243,6 +383,9 @@ async def run():
             asyncio.create_task(worker.loop(
                 'forecast', worker.forecast_tick,
                 sources.ForecastSource.interval_s)),
+            asyncio.create_task(worker.loop(
+                'nowcast', worker.nowcast_tick,
+                sources.NowcastSource.interval_s)),
             asyncio.create_task(worker.loop(
                 'cleanup', worker.cleanup_tick, 3600)),
         ]

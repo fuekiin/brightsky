@@ -120,6 +120,35 @@ class ForecastSource:
         return self.hours.get(cell_key)
 
 
+class NowcastSource:
+    """The radar point nowcast per cell, as the app reads it: `/radar` at
+    the cell centre, `distance=1`, `precipitation_5` in 1/100 mm per
+    5 minutes (`RadarClient.fetchRadar`)."""
+
+    id = 'nowcast'
+    interval_s = 5 * 60
+
+    def __init__(self, http):
+        self.http = http
+
+    async def fetch(self, lat, lon, now):
+        from brightsky.push.live import Point
+        resp = await self.http.get(
+            f'{settings.PUSH_WEATHER_URL}/radar',
+            params={'lat': lat, 'lon': lon, 'distance': 1,
+                    'date': now.isoformat(), 'format': 'plain',
+                    'tz': 'UTC'})
+        resp.raise_for_status()
+        points = []
+        for entry in resp.json()['radar']:
+            grid = entry.get('precipitation_5') or [[0]]
+            value = (grid[0] or [0])[0] or 0
+            points.append(Point(
+                datetime.datetime.fromisoformat(entry['timestamp']),
+                value / 100))
+        return sorted(points, key=lambda p: p.timestamp)
+
+
 def http_client():
     return httpx.AsyncClient(
         timeout=30, headers={'User-Agent': 'nano-push (push.nano-wetter.de)'})

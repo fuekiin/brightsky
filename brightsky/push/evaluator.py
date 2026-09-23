@@ -514,3 +514,55 @@ def fallback(rule, evidence):
     if first.metric in ('precip', 'snow'):
         return ('Niederschlagsgrenze erreicht', f'Erwartet: {phrase}.')
     return ('Wettergrenze erreicht', f'Erwartet: {phrase}.')
+
+
+# MARK: - Rain (RuleEvaluator.rainMatch)
+
+def context_phrase(conditions, held):
+    """„1 °C", „Böen bis 70 km/h" — what the value conditions found, as a
+    short tail (`RuleEvaluator.contextPhrase`)."""
+    parts = [body_value(c.metric, h.value) if c.metric in ('temp',
+                                                           'apparent')
+             else value_phrase(c.metric, c.cmp, h.value)
+             for c, h in zip(conditions, held)]
+    return ', '.join(parts) or None
+
+
+@dataclass(frozen=True)
+class RainMatch:
+    starts_in_minutes: int
+    duration_minutes: int
+    evidence: Evidence
+    context: str | None = None
+
+
+def rain_match(rule, rain, hours, now):
+    """A rain rule against the nowcast: real rain (≥ 0.3 mm/h for ≥ 10 min,
+    §17.3) within the rule's horizon — `nextHours` capped at 2 h, else 1 h —
+    with the value conditions judged over the rain's own hours."""
+    if rain is None or rain.first_rain_at is None:
+        return None
+    if rule.window.days == 'nextHours':
+        horizon = min(rule.window.hours, 2) * HOUR
+    else:
+        horizon = HOUR
+    first = rain.first_rain_at
+    if first > now + horizon:
+        return None
+    context = None
+    values = {}
+    if rule.values:
+        end = first + max(HOUR, datetime.timedelta(
+            minutes=rain.duration_minutes))
+        hs = [h for h in hours if first - HOUR <= h.timestamp <= end]
+        held = values_hold(rule.values, hs)
+        if held is None:
+            return None
+        context = context_phrase(rule.values, held)
+        values = {h.metric: h.value for h in held}
+    minutes = max(0, int((first - now).total_seconds() // 60))
+    evidence = Evidence(
+        values=values, day='heute', time=f'in {minutes} Minuten',
+        rain={'startsInMinutes': minutes,
+              'durationMinutes': rain.duration_minutes})
+    return RainMatch(minutes, rain.duration_minutes, evidence, context)

@@ -113,3 +113,20 @@ def decide_warnings(rule, matches, states, now):
             d.writes[key] = (t, fired_at, datetime.datetime.fromisoformat(
                 t['end']) + datetime.timedelta(days=1))
     return d
+
+
+def decide_rain(rule, match, states, now):
+    """One notification per rain event; re-arms when the nowcast clears
+    (design §4.2) — event-level hysteresis, so a five-minute poll never
+    reports the same shower twice."""
+    d = Decision()
+    row = states.get('rain')
+    armed = row is None or row['state'].get('armed', False)
+    if match is not None:
+        if armed:
+            d.fires.append(Fire(rule.id, 'rain', f'rain:{rule.id}',
+                                match.evidence, 'new'))
+            d.writes['rain'] = ({'armed': False}, now, None)
+    elif not armed:
+        d.writes['rain'] = ({'armed': True}, row['fired_at'], None)
+    return d

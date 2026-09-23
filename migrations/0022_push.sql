@@ -56,6 +56,8 @@ CREATE TABLE push.live_activities (
   started_at      timestamptz NOT NULL,
   last_update_at  timestamptz,
   last_content    jsonb NOT NULL,
+  -- What the activity is about: event key, level, predicted change, class
+  state           jsonb NOT NULL DEFAULT '{}',
   ended_at        timestamptz,
   cooldown_until  timestamptz
 );
