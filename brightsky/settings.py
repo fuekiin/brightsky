@@ -50,6 +50,16 @@ POLLEN_REGIONS_URL = (
     '?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature'
     '&TYPENAMES=Pollenfluggebiete&OUTPUTFORMAT=json'
 )
+# nano push service (docs/nano/push.md)
+PUSH_APNS_KEY_ID = ''
+PUSH_APNS_KEY_PATH = ''
+PUSH_APNS_TEAM_ID = ''
+PUSH_APNS_TOPIC = 'de.nano-wetter.app'
+PUSH_MAX_RULES_PER_DEVICE = 50
+# Unauthenticated registrations per client IP and hour
+PUSH_REGISTER_RATE_LIMIT = 30
+# Loopback base URL of the `web` container the evaluator reads from
+PUSH_WEATHER_URL = 'http://localhost:5000'
 REDIS_URL = 'redis://localhost'
 SERVER_URL = 'http://localhost:5000'
 UV_STATIONS_URL = (

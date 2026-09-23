@@ -163,3 +163,20 @@ def radar3d_grid(directory):
     from brightsky.radar3d.ingest import grid_directory
     for cycle in grid_directory(directory):
         print(cycle.isoformat())
+
+
+@cli.command(name='push-serve')
+@click.option('--bind', default='127.0.0.1:5001', help='Bind address')
+@click.option(
+    '--forwarded-allow-ips', default='127.0.0.1',
+    help='Proxies trusted for X-Forwarded-For (Traefik in production)')
+def push_serve(bind, forwarded_allow_ips):
+    """Start the nano push API (registration, activity tokens, health)."""
+    host, port = bind.rsplit(':', 1)
+    uvicorn.run(
+        'brightsky.push.api:app',
+        host=host,
+        port=int(port),
+        proxy_headers=True,
+        forwarded_allow_ips=forwarded_allow_ips,
+    )
