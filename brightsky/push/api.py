@@ -11,10 +11,11 @@ import logging
 import re
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import ORJSONResponse
+from fastapi.responses import ORJSONResponse, Response
 from pydantic import BaseModel, field_validator
 
 import brightsky
@@ -200,6 +201,20 @@ async def end_activity(
             ACTIVITY_COOLDOWN)
     logger.info('Device %s: activity %s dismissed', device_id,
                 body.activityId)
+
+
+# The rule catalogue (backend §6, rules design §8). Owned by the app repo:
+# WeatherGermany docs/push/catalog.json, generated from RuleCatalog.fallback
+# and pinned by a WeatherCore test. Copied here verbatim — never edit it in
+# this repo, copy it again.
+CATALOG = (Path(__file__).parent / 'catalog.json').read_bytes()
+
+
+@app.get('/v1/catalog')
+async def catalog():
+    return Response(
+        CATALOG, media_type='application/json',
+        headers={'Cache-Control': 'public, max-age=86400'})
 
 
 # The loops push-work runs; an entry that never succeeded reports null age.

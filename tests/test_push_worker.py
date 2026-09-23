@@ -367,3 +367,63 @@ def test_warning_takes_over_escalates_and_is_cancelled(push_db, monkeypatch):
     assert payload['aps']['event'] == 'end'
     assert payload['aps']['content-state']['phase']['warning']['_0'][
         'stage'] == 'cancelled'
+
+
+# MARK: - Morgenübersicht
+
+def test_digest_once_a_morning(push_db, monkeypatch):
+    from brightsky.push import berlin, evaluator as ev
+    digest = {'at': '07:00', 'tz': 'Europe/Berlin'}
+    tropical = {'id': WARN_RULE, 'kind': 'user_rule', 'cellKey': CELL,
+                'schedule': digest,
+                'params': {'all': [{'metric': 'temp', 'cmp': 'gt',
+                                    'value': 20}],
+                           'window': {'days': 'today', 'part': 'night'}}}
+    washing = {'id': WARN_RULE_2, 'kind': 'user_rule', 'cellKey': CELL,
+               'schedule': digest,
+               'params': {'all': [{'metric': 'precip', 'cmp': 'lt',
+                                   'value': 0.1}],
+                          'window': {'days': 'today',
+                                     'part': {'from': 9, 'to': 18}}}}
+    stub = StubAPNs()
+    run(push_db, register([tropical, washing]), stub, monkeypatch)
+
+    def b(h, m=0):
+        return datetime.datetime(2026, 9, 23, h, m, tzinfo=berlin.TZ)
+    hours = ([ev.Hour(b(h), temperature=16, precipitation=0)
+              for h in range(9, 18)]
+             + [ev.Hour(b(23), temperature=21, precipitation=0)])
+
+    async def fake_fetch(self, cell_key, lat, lon, now):
+        self.hours[cell_key] = hours
+        self.fetched_at[cell_key] = now
+        return hours
+    monkeypatch.setattr(sources.ForecastSource, 'fetch', fake_fetch)
+
+    def dtick(at):
+        async def fn(worker, pool):
+            return await worker.digest_tick(at)
+        return fn
+    run(push_db, dtick(b(6, 59)), stub, monkeypatch)
+    assert stub.requests == []
+    run(push_db, dtick(b(7, 5)), stub, monkeypatch)
+    [req] = stub.requests
+    payload = json.loads(req.content)
+    assert payload['aps']['alert'] == {
+        'title': 'Morgenübersicht: 2 Regeln',
+        'body': '2 deiner Regeln treffen heute zu.'}
+    assert payload['aps']['thread-id'] == 'digest'
+    assert 'interruption-level' not in payload['aps']
+    nano = payload['nano']
+    assert (nano['kind'], nano['date']) == ('digest', '2026-09-23')
+    assert nano['ruleIds'] == [WARN_RULE, WARN_RULE_2]
+    assert nano['items'][1]['evidence']['values'] == {'precip': 0.0}
+    # Once a morning.
+    run(push_db, dtick(b(7, 6)), stub, monkeypatch)
+    assert len(stub.requests) == 1
+    # Digest rules never fire through the immediate loops.
+
+    async def ftick(worker, pool):
+        return await worker.forecast_tick(b(7, 10))
+    run(push_db, ftick, stub, monkeypatch)
+    assert len(stub.requests) == 1

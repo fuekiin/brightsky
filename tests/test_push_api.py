@@ -261,3 +261,83 @@ def test_health(push):
     assert body['status'] == 'ok'
     assert body['database'] is True
     assert body['sources']['warnings']['lastSuccessAgeSeconds'] is None
+
+
+def test_catalog_is_served_verbatim(push):
+    import json
+    from pathlib import Path
+    import brightsky.push
+    raw = (Path(brightsky.push.__file__).parent / 'catalog.json').read_bytes()
+    resp = push.get('/v1/catalog')
+    assert resp.status_code == 200
+    assert resp.content == raw
+    assert resp.headers['cache-control'] == 'public, max-age=86400'
+    catalog = json.loads(raw)
+    assert set(catalog) >= {'version', 'limits', 'templates', 'themes'}
+
+
+def _wire(template):
+    """A catalogue template (Swift Codable shape) → the wire rule the app's
+    RuleWireMapper sends for it."""
+    conditions, kind = [], 'user_rule'
+    for c in template['conditions']:
+        if 'officialWarning' in c:
+            kind = 'dwd_warning'
+            conditions.append({'warning': c['officialWarning']})
+        elif 'rainApproaching' in c:
+            kind = 'rain_nowcast'
+            conditions.append({'rain': {}})
+        else:
+            v = c['value']
+            conditions.append({'metric': v['metric'], 'cmp': v['comparator'],
+                               'value': v['threshold']})
+    w = template['window']
+    if 'nextHours' in w:
+        window = {'nextHours': w['nextHours']['_0']}
+    else:
+        [(days, spec)] = w['days']['_0'].items()
+        [(part, part_spec)] = w['days']['during'].items()
+        window = {'days': days,
+                  'part': part_spec if part == 'hours' else part}
+        if days == 'weekdays':
+            window.update(weekdays=sorted(spec['_0']),
+                          notice=spec['notice'],
+                          together=spec.get('together', False))
+        elif days == 'once':
+            # resolved to dates on the device when the rule is saved
+            window.update(dates=['2099-09-27'], notice=spec['_0']['notice'])
+        elif days == 'nextDays':
+            window.update(count=spec['_0'])
+    rule = rule_(kind=kind, params={'all': conditions, 'window': window})
+    delivery = template['delivery']
+    if 'liveActivity' in delivery:
+        rule['live'] = {'night': delivery['liveActivity']['night']}
+    if 'morningDigest' in delivery:
+        rule['schedule'] = {'at': '07:00', 'tz': 'Europe/Berlin'}
+    return rule
+
+
+def rule_(**kw):
+    return rule(**kw)
+
+
+def test_catalog_templates_are_rules_the_server_accepts():
+    """Every preset in the catalogue must survive registration — a preset
+    the server rejects would be a switch that flips back."""
+    import json
+    from pathlib import Path
+    import brightsky.push
+    from brightsky.push import rules as rulemod
+    catalog = json.loads(
+        (Path(brightsky.push.__file__).parent / 'catalog.json').read_text())
+    assert catalog['limits']['freeRules'] > 0
+    assert 0 < catalog['limits']['maxConditions'] <= 10
+    templates = catalog['templates']
+    assert len({t['key'] for t in templates}) == len(templates)
+    for t in templates:
+        if 'inAppOnly' in t['delivery']:
+            continue   # never registered (rules design §18.2)
+        for c in t['conditions']:
+            families = c.get('officialWarning', {}).get('families', [])
+            assert set(families) <= set(rulemod.FAMILIES)
+        rulemod.parse_rule(_wire(t))   # raises Rejected with the reason

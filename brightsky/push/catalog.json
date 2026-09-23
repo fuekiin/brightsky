@@ -1,0 +1,509 @@
+{
+  "limits" : {
+    "freeRules" : 8,
+    "maxConditions" : 4
+  },
+  "templates" : [
+    {
+      "autoApplyDefault" : true,
+      "conditions" : [
+        {
+          "officialWarning" : {
+            "families" : [
+
+            ],
+            "minLevel" : 1
+          }
+        }
+      ],
+      "delivery" : {
+        "inAppOnly" : {
+
+        }
+      },
+      "key" : "amtlich",
+      "message" : {
+
+      },
+      "name" : "Amtliche Warnungen",
+      "subline" : "Jede DWD-Warnung in der App, ohne Mitteilung",
+      "symbolName" : "exclamationmark.bubble.fill",
+      "theme" : "warnungen",
+      "window" : {
+        "nextHours" : {
+          "_0" : 24
+        }
+      }
+    },
+    {
+      "autoApplyDefault" : true,
+      "conditions" : [
+        {
+          "officialWarning" : {
+            "families" : [
+
+            ],
+            "minLevel" : 3
+          }
+        }
+      ],
+      "delivery" : {
+        "immediate" : {
+
+        }
+      },
+      "key" : "unwetter",
+      "message" : {
+
+      },
+      "name" : "Unwetterwarnung",
+      "subline" : "Amtliche DWD-Warnung ab Stufe 3",
+      "symbolName" : "exclamationmark.triangle.fill",
+      "theme" : "warnungen",
+      "window" : {
+        "nextHours" : {
+          "_0" : 6
+        }
+      }
+    },
+    {
+      "autoApplyDefault" : false,
+      "conditions" : [
+        {
+          "rainApproaching" : {
+
+          }
+        }
+      ],
+      "delivery" : {
+        "liveActivity" : {
+          "night" : false
+        }
+      },
+      "key" : "regen",
+      "message" : {
+
+      },
+      "name" : "Regen zieht auf",
+      "subline" : "Radar, nächste Stunde — live verfolgt, mit Countdown",
+      "symbolName" : "cloud.rain.fill",
+      "theme" : "warnungen",
+      "window" : {
+        "nextHours" : {
+          "_0" : 1
+        }
+      }
+    },
+    {
+      "autoApplyDefault" : false,
+      "conditions" : [
+        {
+          "officialWarning" : {
+            "families" : [
+              "regen",
+              "sturm",
+              "gewitter"
+            ],
+            "minLevel" : 2
+          }
+        }
+      ],
+      "delivery" : {
+        "liveActivity" : {
+          "night" : false
+        }
+      },
+      "key" : "unwetter_hier",
+      "message" : {
+
+      },
+      "name" : "Unwetter, wo ich bin",
+      "subline" : "Gewitter, Starkregen, Sturm ab markant — live verfolgt, bis sie endet",
+      "symbolName" : "cloud.bolt.rain.fill",
+      "theme" : "warnungen",
+      "window" : {
+        "nextHours" : {
+          "_0" : 6
+        }
+      }
+    },
+    {
+      "autoApplyDefault" : false,
+      "conditions" : [
+        {
+          "value" : {
+            "comparator" : "gt",
+            "metric" : "gust",
+            "threshold" : 70
+          }
+        }
+      ],
+      "delivery" : {
+        "immediate" : {
+
+        }
+      },
+      "key" : "boeen",
+      "message" : {
+
+      },
+      "name" : "Stürmische Böen",
+      "subline" : "Böen über 70 km/h in den nächsten 12 Stunden",
+      "symbolName" : "wind.circle.fill",
+      "theme" : "warnungen",
+      "window" : {
+        "nextHours" : {
+          "_0" : 12
+        }
+      }
+    },
+    {
+      "autoApplyDefault" : false,
+      "conditions" : [
+        {
+          "value" : {
+            "comparator" : "gt",
+            "metric" : "temp",
+            "threshold" : 22
+          }
+        },
+        {
+          "value" : {
+            "comparator" : "lt",
+            "metric" : "precip",
+            "threshold" : 0.1
+          }
+        },
+        {
+          "value" : {
+            "comparator" : "lt",
+            "metric" : "gust",
+            "threshold" : 25
+          }
+        }
+      ],
+      "delivery" : {
+        "immediate" : {
+
+        }
+      },
+      "key" : "grill",
+      "message" : {
+        "body" : [
+          {
+            "placeholder" : {
+              "_0" : {
+                "day" : {
+
+                }
+              }
+            }
+          },
+          {
+            "text" : {
+              "_0" : " "
+            }
+          },
+          {
+            "placeholder" : {
+              "_0" : {
+                "value" : {
+                  "_0" : "temp"
+                }
+              }
+            }
+          },
+          {
+            "text" : {
+              "_0" : " und trocken in "
+            }
+          },
+          {
+            "placeholder" : {
+              "_0" : {
+                "place" : {
+
+                }
+              }
+            }
+          },
+          {
+            "text" : {
+              "_0" : "."
+            }
+          }
+        ],
+        "title" : [
+          {
+            "text" : {
+              "_0" : "Grillwetter!"
+            }
+          }
+        ]
+      },
+      "name" : "Grillwetter am Wochenende",
+      "subline" : "Warm, trocken, wenig Wind — Bescheid am Vortag",
+      "symbolName" : "flame.fill",
+      "theme" : "draussen",
+      "window" : {
+        "days" : {
+          "_0" : {
+            "weekdays" : {
+              "_0" : [
+                7,
+                6
+              ],
+              "notice" : "dayBefore",
+              "together" : true
+            }
+          },
+          "during" : {
+            "hours" : {
+              "from" : 12,
+              "to" : 20
+            }
+          }
+        }
+      }
+    },
+    {
+      "autoApplyDefault" : false,
+      "conditions" : [
+        {
+          "value" : {
+            "comparator" : "gt",
+            "metric" : "temp",
+            "threshold" : 18
+          }
+        },
+        {
+          "value" : {
+            "comparator" : "lt",
+            "metric" : "precip",
+            "threshold" : 0.1
+          }
+        }
+      ],
+      "delivery" : {
+        "immediate" : {
+
+        }
+      },
+      "key" : "ausflug",
+      "message" : {
+
+      },
+      "name" : "Ausflug nächsten Sonntag",
+      "subline" : "Einmalig: trocken und über 18 °C",
+      "symbolName" : "figure.hiking",
+      "theme" : "draussen",
+      "window" : {
+        "days" : {
+          "_0" : {
+            "once" : {
+              "_0" : {
+                "dates" : [
+
+                ],
+                "notice" : "dayBefore",
+                "pick" : "nextWeekday",
+                "weekday" : 7
+              }
+            }
+          },
+          "during" : {
+            "hours" : {
+              "from" : 10,
+              "to" : 18
+            }
+          }
+        }
+      }
+    },
+    {
+      "autoApplyDefault" : false,
+      "conditions" : [
+        {
+          "value" : {
+            "comparator" : "lt",
+            "metric" : "precip",
+            "threshold" : 0.1
+          }
+        },
+        {
+          "value" : {
+            "comparator" : "gt",
+            "metric" : "sun",
+            "threshold" : 4
+          }
+        }
+      ],
+      "delivery" : {
+        "morningDigest" : {
+
+        }
+      },
+      "key" : "waesche",
+      "message" : {
+
+      },
+      "name" : "Wäsche draußen",
+      "subline" : "Kein Regen, über 4 Stunden Sonne",
+      "symbolName" : "tshirt.fill",
+      "theme" : "draussen",
+      "window" : {
+        "days" : {
+          "_0" : {
+            "today" : {
+
+            }
+          },
+          "during" : {
+            "hours" : {
+              "from" : 9,
+              "to" : 18
+            }
+          }
+        }
+      }
+    },
+    {
+      "autoApplyDefault" : false,
+      "conditions" : [
+        {
+          "value" : {
+            "comparator" : "gt",
+            "metric" : "temp",
+            "threshold" : 20
+          }
+        }
+      ],
+      "delivery" : {
+        "morningDigest" : {
+
+        }
+      },
+      "key" : "tropennacht",
+      "message" : {
+
+      },
+      "name" : "Tropennacht",
+      "subline" : "Nachts nicht unter 20 °C",
+      "symbolName" : "moon.stars.fill",
+      "theme" : "draussen",
+      "window" : {
+        "days" : {
+          "_0" : {
+            "today" : {
+
+            }
+          },
+          "during" : {
+            "night" : {
+
+            }
+          }
+        }
+      }
+    },
+    {
+      "autoApplyDefault" : false,
+      "conditions" : [
+        {
+          "value" : {
+            "comparator" : "lt",
+            "metric" : "temp",
+            "threshold" : 1
+          }
+        },
+        {
+          "value" : {
+            "comparator" : "gt",
+            "metric" : "precip",
+            "threshold" : 0
+          }
+        }
+      ],
+      "delivery" : {
+        "immediate" : {
+
+        }
+      },
+      "key" : "glaette",
+      "message" : {
+
+      },
+      "name" : "Glätte vor der Frühschicht",
+      "subline" : "Werktags morgens unter 1 °C mit Niederschlag — Bescheid am Vortag",
+      "symbolName" : "car.fill",
+      "theme" : "unterwegs",
+      "window" : {
+        "days" : {
+          "_0" : {
+            "weekdays" : {
+              "_0" : [
+                3,
+                5,
+                4,
+                2,
+                1
+              ],
+              "notice" : "dayBefore",
+              "together" : false
+            }
+          },
+          "during" : {
+            "morning" : {
+
+            }
+          }
+        }
+      }
+    },
+    {
+      "autoApplyDefault" : false,
+      "conditions" : [
+        {
+          "value" : {
+            "comparator" : "lt",
+            "metric" : "temp",
+            "threshold" : 0
+          }
+        }
+      ],
+      "delivery" : {
+        "immediate" : {
+
+        }
+      },
+      "key" : "frost",
+      "message" : {
+
+      },
+      "name" : "Frost in der Nacht",
+      "subline" : "Unter 0 °C zwischen 22 und 6 Uhr",
+      "symbolName" : "thermometer.snowflake",
+      "theme" : "unterwegs",
+      "window" : {
+        "days" : {
+          "_0" : {
+            "today" : {
+
+            }
+          },
+          "during" : {
+            "night" : {
+
+            }
+          }
+        }
+      }
+    }
+  ],
+  "themes" : [
+    "warnungen",
+    "draussen",
+    "unterwegs"
+  ],
+  "version" : 1
+}

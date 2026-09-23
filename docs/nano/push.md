@@ -94,13 +94,32 @@ sends nothing.
 
 | Step (backend §12) | State |
 |---|---|
-| 1 schema, `POST /v1/devices`, `/health` | done, verified with the simulator app |
-| 2 sender, `push-send` | done; provider auth verified against sandbox and production; device token pending |
+| 1 schema, `POST /v1/devices`, `/health` | done, verified with the simulator and the iPhone |
+| 2 sender, `push-send` | done; alert, push-to-start, update and end delivered to the iPhone (production), the activity token PUT arrives in the background |
 | 3 warnings loop | done, runs against live DWD data locally |
 | 4 forecast loop, `user_rule` | done |
-| 5 catalogue | open |
-| 6 digest (07:00) | open — `schedule` rules are stored but not evaluated yet |
-| 7 nowcast, rain + warning Live Activities | open — live rules currently arrive as notifications (the spec's fallback) |
+| 5 `GET /v1/catalog` | done — serves `brightsky/push/catalog.json` verbatim, 24 h cache |
+| 6 digest (07:00) | done — one Morgenübersicht per device, retried until 10:00 |
+| 7 nowcast, rain + warning Live Activities | done; an automatic rain start went out from real radar data (sandbox 200) |
+
+**The catalogue is owned by the app repo** (`WeatherGermany/docs/push/catalog.json`, generated
+from `RuleCatalog.fallback` and pinned by a WeatherCore test). Never edit the copy here — copy
+it again. `test_catalog_templates_are_rules_the_server_accepts` checks every preset registers.
+
+**Morgenübersicht payload**: fallback „Morgenübersicht: 2 Regeln" / „2 deiner Regeln treffen
+heute zu.", thread-id `digest`, `nano = {v, kind: "digest", date, ruleIds, items: [{ruleId,
+ruleIds, kind, cellKey, occurrence, evidence}]}` — the extension composes
+`NotificationComposer.digest(titles:)` from the device's rule names.
+
+**Live Activities**: rain starts on real rain (≥ 0.3 mm/h for ≥ 10 min) within 60 min, updates
+only when the predicted change moves > 5 min or the class changes (≥ 10 min apart unless it
+escalates), ends with `dismissal-date` +15 min and a 60-min cooldown, 4 h at most. A warning takes
+over the same activity by update (upcoming → active, escalation with alert, cancelled → end,
+expiry → end). Between 22 and 6 starts are silent except warnings from level 3. Without a
+push-to-start token, with Live Activities off, or when APNs refuses the start, the event arrives
+as a notification. The server cannot rank „the place you are at" (it does not know which cell
+is the current location), so precedence is: severe warnings, then warnings before rain, then
+the earlier.
 
 ## Local development
 

@@ -11,7 +11,7 @@ import logging
 import signal
 
 from brightsky.push import (
-    apns, dispatcher, evaluator as ev, firing, live, livectl,
+    apns, berlin, dispatcher, evaluator as ev, firing, live, livectl,
     rules as rulemod, sender, sources, store,
 )
 
@@ -58,6 +58,20 @@ RULES_SQL = """
       -- Morgenübersicht rules belong to the digest loop (design §12.6)
       AND r.schedule IS NULL
 """
+
+
+DIGEST_SQL = """
+    SELECT r.*, c.lat, c.lon, c.warn_cell_id,
+           d.id AS d_id, d.apns_token, d.environment,
+           d.push_to_start_token, d.live_activities_enabled
+    FROM push.rules r
+    JOIN push.cells c USING (cell_key)
+    JOIN push.devices d ON d.id = r.device_id
+    WHERE r.enabled AND r.schedule IS NOT NULL
+"""
+# The Morgenübersicht goes out at 07:00 Europe/Berlin; if a source is down
+# it is retried every minute, but a digest after 10:00 is no longer one.
+DIGEST_HOURS = range(7, 10)
 
 
 async def load_states(conn, rule_ids):
@@ -327,6 +341,57 @@ class Worker:
             await store.mark_source(conn, 'nowcast', now)
         return len(rows)
 
+    # MARK: digest
+
+    async def digest_tick(self, now):
+        local = now.astimezone(berlin.TZ)
+        if local.hour not in DIGEST_HOURS:
+            return None
+        today = local.date()
+        async with self.pool.acquire() as conn:
+            done = await conn.fetchval(
+                "SELECT last_success FROM push.source_status "
+                "WHERE source = 'digest'")
+            if done is not None and berlin.local_date(done) == today:
+                return None
+            rows = await conn.fetch(DIGEST_SQL)
+            obs = None
+            if any(r['kind'] == 'dwd_warning' for r in rows):
+                obs = await self.warnings.refresh(conn, now)
+            states = await load_states(conn, [r['id'] for r in rows])
+            decided = []
+            for row in rows:
+                rule = rule_from_row(row)
+                if rulemod.is_expired(rule.window, now):
+                    continue
+                prior = states.get(rule.id, {})
+                hours = (await self.hours_for(row, now)
+                         if rule.values else [])
+                if rule.kind == 'user_rule':
+                    decision = firing.decide_values(
+                        rule, ev.value_matches(rule, hours, now), prior, now)
+                elif rule.kind == 'dwd_warning':
+                    matches = ev.warning_matches(
+                        rule, obs.lookup(row['warn_cell_id']), hours, now)
+                    decision = firing.decide_warnings(rule, matches, prior,
+                                                      now)
+                else:
+                    rain = live.analyze_rain(await self.nowcast.fetch(
+                        row['lat'], row['lon'], now), now)
+                    decision = firing.decide_rain(
+                        rule, ev.rain_match(rule, rain, hours, now), prior,
+                        now)
+                decided.append((rule, row, decision))
+            by_device = {}
+            for rule, row, decision in decided:
+                by_device.setdefault(str(row['d_id']), (row, []))[1].append(
+                    (rule, row, decision))
+            for row, items in by_device.values():
+                await dispatcher.apply(conn, self.client, device_of(row),
+                                       items, now, digest_date=today)
+            await store.mark_source(conn, 'digest', now)
+        return len(rows)
+
     # MARK: housekeeping
 
     async def cleanup_tick(self, now):
@@ -386,6 +451,8 @@ async def run():
             asyncio.create_task(worker.loop(
                 'nowcast', worker.nowcast_tick,
                 sources.NowcastSource.interval_s)),
+            asyncio.create_task(worker.loop(
+                'digest', worker.digest_tick, 60)),
             asyncio.create_task(worker.loop(
                 'cleanup', worker.cleanup_tick, 3600)),
         ]

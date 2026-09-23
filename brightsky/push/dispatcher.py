@@ -19,12 +19,13 @@ def delivery_strength(rule_row):
     return 3 if rule_row['live'] is not None else 2
 
 
-async def apply(conn, client, device, items, now):
+async def apply(conn, client, device, items, now, digest_date=None):
     """Write state and deliver one device's fires.
 
     `items`: [(rule, rule_row, decision)] for this device. State is written
     before sending: at-most-once — a crash between the two loses one
-    notification rather than repeating it on every restart.
+    notification rather than repeating it on every restart. With
+    `digest_date`, everything goes out as one Morgenübersicht.
     """
     events = {}
     async with conn.transaction():
@@ -43,6 +44,11 @@ async def apply(conn, client, device, items, now):
             for fire in decision.fires:
                 events.setdefault(fire.event_key, []).append(
                     (rule, row, fire))
+    if digest_date is not None:
+        if events:
+            await deliver_digest(conn, client, device, events, digest_date,
+                                 now)
+        return
     for event_key, fires in events.items():
         await deliver_event(conn, client, device, event_key, fires, now)
 
@@ -110,3 +116,48 @@ async def _audit(conn, device_id, rule_id, occurrence_key, now, reason):
           apns_reason)
         VALUES ($1, $2, $3, 'alert', $4, $5)
         """, device_id, rule_id, occurrence_key, now, reason)
+
+
+def rule_count(n):
+    """`NotificationRuleSpeech.ruleCount`."""
+    return 'keine Regeln' if n == 0 else '1 Regel' if n == 1 else f'{n} Regeln'
+
+
+def build_digest(events, digest_date):
+    """The Morgenübersicht (`NotificationComposer.digest`). Its real text
+    lists the rules' titles, which only the device knows, so the fallback
+    counts and `items` carries each event for the extension to compose."""
+    items = []
+    for event_key, fires in events.items():
+        rule, row, fire = lead(fires)
+        items.append((row['position'], {
+            'ruleId': rule.id,
+            'ruleIds': [r.id for r, _, _ in sorted(
+                fires, key=lambda f: f[1]['position'])],
+            'kind': rule.kind,
+            'cellKey': rule.cell_key,
+            'occurrence': event_key,
+            'evidence': fire.evidence.to_json(),
+        }))
+    items = [item for _, item in sorted(items, key=lambda i: i[0])]
+    n = len(items)
+    body = ('Eine deiner Regeln trifft heute zu.' if n == 1
+            else f'{n} deiner Regeln treffen heute zu.')
+    data = {'v': 1, 'kind': 'digest', 'date': digest_date.isoformat(),
+            'ruleIds': [i['ruleId'] for i in items], 'items': items}
+    return payloads.alert(f'Morgenübersicht: {rule_count(n)}', body,
+                          thread_id='digest', data=data)
+
+
+async def deliver_digest(conn, client, device, events, digest_date, now):
+    device_id = str(device['id'])
+    payload = build_digest(events, digest_date)
+    key = f'digest:{digest_date.isoformat()}'
+    if not device['apns_token']:
+        await _audit(conn, device_id, None, key, now, 'no_token')
+        return
+    await sender.deliver(
+        conn, client, device_id=device_id,
+        environment=device['environment'], token=device['apns_token'],
+        token_field='apns_token', payload=payload, priority=10,
+        occurrence_key=key, collapse_id=key, now=now)
