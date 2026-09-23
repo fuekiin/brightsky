@@ -37,6 +37,16 @@ services:
     <<: *brightsky
     command: --migrate radar3d-work
     restart: unless-stopped
+  push-api:
+    <<: *brightsky
+    command: push-serve --bind 0.0.0.0:5001 --forwarded-allow-ips '*'
+    restart: unless-stopped
+    ports:
+      - 5001:5001
+  push-work:
+    <<: *brightsky
+    command: --migrate push-work
+    restart: unless-stopped
   brightsky:
     <<: *brightsky
     scale: 0

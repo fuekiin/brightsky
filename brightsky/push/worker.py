@@ -226,6 +226,9 @@ class Worker:
 
 
 async def run():
+    # One line per request per minute drowns the loop's own log.
+    for name in ('httpx', 'httpcore', 'hpack'):
+        logging.getLogger(name).setLevel(logging.WARNING)
     try:
         client = sender.client_from_settings()
     except RuntimeError as e:

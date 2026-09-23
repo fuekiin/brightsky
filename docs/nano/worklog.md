@@ -433,3 +433,20 @@ crop: median 1.0 cell per 5 min over 119 echo tiles, consistent frame to frame),
 07:08 UTC with the usual procedure. Record in `bright_sky_config` `docs/deploy-2026-09-18-motion.md`.
 Four deploys today: `nano-v3` rain/clouds/cells, `nano-v4` model forecast, `nano-v5` nowcast,
 `nano-v6` motion field.
+
+## 2026-09-23 — push service, steps 1–4 (branch `nano-push`)
+
+Built from the app repo's push-backend design, working with the app session ("nano MBP")
+over cross-session messages. Wire shape agreed without changes on either side except two
+additions: `ruleId` in the Live Activity content-state, and the `nano` evidence object in
+notifications (see [push.md](push.md)). Two bugs in the app's reference evaluator found while
+porting and fixed there (dc3bc1b): „gefühlt" read the air temperature; Neuschnee had no
+explicit cm/mm ratio.
+
+Verified: the simulator app registered 5 rules against the local `push-serve` without
+rejections; APNs provider auth accepted in sandbox and production (bogus device token →
+`BadDeviceToken`, not `InvalidProviderToken`); `push-work` ran against live DWD alerts and
+`api.nano-wetter.de/weather`, resolved Hamburg's warn cell and correctly did not fire on a
+level-1 WINDBÖEN for level-2/3 rules. Not yet: a push to a real device token (waiting for a
+device build), steps 5–7, production deploy. Pre-existing, unrelated: `test_polling.py::
+test_dwdpoller_poll_ignores_parsed_files` fails on `nano-health` too.

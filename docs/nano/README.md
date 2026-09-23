@@ -49,6 +49,13 @@ Own package `brightsky/radar3d/`, own table `radar3d_frames`, own worker contain
 the same manifest; only the 500 m detail boxes remain a follow-up. See the "Radar 3D pipeline" section of [architecture.md](architecture.md) and the
 brief in the app repo (`docs/superpowers/specs/2026-09-17-radar-3d-backend-brief.md`).
 
+## Push service (added 2026-09-23, branch `nano-push`)
+
+The third nano extension: `push.nano-wetter.de`, which evaluates the app's notification rules
+against DWD warnings and forecasts and delivers them through APNs. Own package
+`brightsky/push/`, own schema `push`, two containers (`push-api`, `push-work`) from the same
+image. See [push.md](push.md).
+
 ## Where things live
 
 - **Parsing** — our dwdparse fork (sibling checkout `../dwdparse`, branch `nano-health`):
