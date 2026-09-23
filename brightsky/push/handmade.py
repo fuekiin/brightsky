@@ -53,7 +53,7 @@ async def send_handmade(device_id, kind, title, body, payload=None):
                         stale=now + datetime.timedelta(minutes=30))
                     if kind == 'update' else payloads.live_end(
                         content, now=now,
-                        dismissal=now + datetime.timedelta(minutes=15)))
+                        dismissal=now))   # a test end clears at once
             if token_field == 'activity_token':
                 token = activity and activity['activity_token']
             else:
