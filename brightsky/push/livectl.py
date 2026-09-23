@@ -65,6 +65,9 @@ async def _save(conn, device_id, *, rule_id, phase, content, state, now,
           ended_at = excluded.ended_at,
           cooldown_until = COALESCE(excluded.cooldown_until,
                                     push.live_activities.cooldown_until)
+        -- Only a new start may replace an ended row: an update racing the
+        -- user's dismissal (push-api, another process) must not undo it.
+        WHERE $9 OR push.live_activities.ended_at IS NULL
         """,
         device_id, rule_id, phase, now, content, state,
         now if ended else None, cooldown_until, started)
@@ -181,6 +184,14 @@ async def start_or_take_over(conn, client, device, row, c, now):
                          alert=True, now=now, rule_id=c.rule_id,
                          event_key=c.event_key,
                          expiration=_expiration(c, now))
+    if result is not None and result.status == 0:
+        # No answer: the start may well have arrived. Wait for the app's
+        # token before giving up, or the next tick starts a second one.
+        await conn.execute(
+            'UPDATE push.live_activities SET state = state || $2::jsonb '
+            'WHERE device_id = $1',
+            device['id'], {'pendingSince': now.isoformat()})
+        return True
     if result is None or not result.ok:
         await conn.execute(
             'UPDATE push.live_activities SET ended_at = $2 '
@@ -190,6 +201,26 @@ async def start_or_take_over(conn, client, device, row, c, now):
     logger.info('Device %s: started %s activity for %s', device['id'],
                 c.kind, c.event_key)
     return True
+
+
+PENDING_START = datetime.timedelta(minutes=2)
+
+
+async def _abandon_unconfirmed(conn, device, row, now):
+    """A start that timed out and whose token never came: after two
+    minutes assume it never arrived, so the next tick may start again."""
+    pending = row['state'].get('pendingSince')
+    if (row['activity_token'] is None and pending
+            and now - datetime.datetime.fromisoformat(pending)
+            >= PENDING_START):
+        await conn.execute(
+            'UPDATE push.live_activities SET ended_at = $2 '
+            'WHERE device_id = $1 AND activity_token IS NULL',
+            device['id'], now)
+        logger.info('Device %s: start never confirmed, given up',
+                    device['id'])
+        return True
+    return False
 
 
 async def update(conn, client, device, row, c, now, *, alert=False,
@@ -252,35 +283,59 @@ def rain_due_update(row, rain, now):
     return changed and (escalated or not recent), escalated
 
 
-async def rain_tick(conn, client, device, candidate, rain, now):
+async def rain_tick(conn, client, device, candidate, rain, running_cell,
+                    now):
     """One device's rain activity per nowcast cycle.
 
-    `candidate`: a live rain rule's event that may start an activity (real
-    rain within 60 min). `rain`: the nowcast at the running activity's
-    rule cell, or None when there is no data — then a running activity is
-    left alone. Returns True when the event is carried live (or held back
-    on purpose), so no notification is needed.
+    `candidate`: the winning live rain event that may start an activity
+    (real rain within 60 min). `rain`: the nowcast at the running
+    activity's cell (`running_cell`), or None when there is no data. The
+    activity only ever shows its own place: a winner elsewhere ends it and
+    starts its own. Returns True when the candidate is carried live (or
+    held back on purpose), so no notification is needed for it.
     """
     async with lock(device['id']):
         row = await load(conn, device['id'])
         if active(row) and row['phase'] == 'warning':
             return False
         if active(row):
-            if rain is None:
-                return True
-            too_old = now - row['started_at'] >= live.MAX_RAIN_LIFETIME
+            if await _abandon_unconfirmed(conn, device, row, now):
+                row = await load(conn, device['id'])
+        if active(row):
+            same_place = (candidate is not None
+                          and candidate.cell_key == running_cell)
             rule_id = row['rule_id'] and str(row['rule_id'])
-            if rain.state == 'ended' or too_old:
+            too_old = now - row['started_at'] >= live.MAX_RAIN_LIFETIME
+            if rule_id is None or running_cell is None or too_old:
+                # Its rule is gone, or it ran its 4 h (§17.3): end it, with
+                # whatever it shows now. Checked before „no data", so an
+                # orphaned row can never stay active.
+                await end(conn, client, device, row,
+                          dict(row['last_content']), now,
+                          cooldown=too_old and rule_id is not None)
+                return too_old and same_place
+            if rain is None:
+                return False    # no data: leave it alone, notify the rest
+            if rain.state == 'ended':
                 # „Trocken für die nächsten 2 Stunden", then end (§4.5)
                 await end(conn, client, device, row,
                           live.rain_content(rain, now, rule_id), now)
-                return True
-            c = candidate or live.Candidate('rain', rule_id, now, rain=rain)
-            due, escalated = rain_due_update(row, c.rain, now)
-            if due:
-                await update(conn, client, device, row, c, now,
-                             alert=escalated and not live.is_night(now))
-            return True
+                return same_place
+            if candidate is not None and not same_place:
+                # Rain somewhere else wins: never switch place silently.
+                await end(conn, client, device, row,
+                          live.rain_content(rain, now, rule_id), now,
+                          cooldown=False)
+                row = await load(conn, device['id'])
+            else:
+                c = live.Candidate(
+                    'rain', rule_id, now, rain=rain, cell_key=running_cell,
+                    context=candidate.context if candidate else None)
+                due, escalated = rain_due_update(row, rain, now)
+                if due:
+                    await update(conn, client, device, row, c, now,
+                                 alert=escalated and not live.is_night(now))
+                return same_place
         if candidate is None or candidate.rain.state == 'ended':
             return False
         cooling = (row is not None and row['phase'] == 'rain'
@@ -312,6 +367,9 @@ async def warning_tick(conn, client, device, candidate, present, now):
     when the candidate is carried live (or held back on purpose)."""
     async with lock(device['id']):
         row = await load(conn, device['id'])
+        if active(row) and await _abandon_unconfirmed(conn, device, row,
+                                                      now):
+            row = await load(conn, device['id'])
         s = row['state'] if row is not None else {}
         if active(row) and row['phase'] == 'warning':
             expires = s.get('expires')

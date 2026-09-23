@@ -19,6 +19,7 @@ from brightsky.push import (
 logger = logging.getLogger('brightsky.push.worker')
 
 CELL_RESOLVE_RETRY = datetime.timedelta(days=1)
+CELL_RESOLVE_ERROR_RETRY = datetime.timedelta(minutes=10)
 FORECAST_CONCURRENCY = 4
 AUDIT_RETENTION = datetime.timedelta(days=30)
 DEVICE_RETENTION = datetime.timedelta(days=90)
@@ -138,7 +139,8 @@ async def dispatch_all(conn, client, decided, now):
             by_device.setdefault(str(row['d_id']), (row, []))[1].append(
                 (rule, row, decision))
     for row, items in by_device.values():
-        await dispatcher.apply(conn, client, device_of(row), items, now)
+        with isolated('delivery for device', row['d_id']):
+            await dispatcher.apply(conn, client, device_of(row), items, now)
 
 
 class Worker:
@@ -163,6 +165,7 @@ class Worker:
               AND (resolved_at IS NULL OR resolved_at < $1)
             """, now - CELL_RESOLVE_RETRY)
         for r in rows:
+            resolved_at = now
             try:
                 meta = await asyncio.to_thread(
                     _warn_cells.find, r['lat'], r['lon'])
@@ -171,9 +174,23 @@ class Worker:
                 warn_cell_id = None
                 logger.info('Cell %s is not covered by a DWD warn cell',
                             r['cell_key'])
+            except Exception as e:
+                # The warn-cell polygons come from DWD's GeoServer once; if
+                # it is down, these cells have no warnings for now — the
+                # warnings of every other cell still go out. Retry in
+                # CELL_RESOLVE_ERROR_RETRY, and stop asking this tick.
+                logger.warning('Warn cells unavailable (%s: %s); retrying',
+                               type(e).__name__, e)
+                await conn.execute(
+                    'UPDATE push.cells SET resolved_at = $2 '
+                    'WHERE warn_cell_id IS NULL AND cell_key = ANY($1)',
+                    [x['cell_key'] for x in rows],
+                    now - CELL_RESOLVE_RETRY + CELL_RESOLVE_ERROR_RETRY)
+                return
             await conn.execute(
                 'UPDATE push.cells SET warn_cell_id = $2, resolved_at = $3 '
-                'WHERE cell_key = $1', r['cell_key'], warn_cell_id, now)
+                'WHERE cell_key = $1', r['cell_key'], warn_cell_id,
+                resolved_at)
 
     async def warnings_tick(self, now):
         async with self.pool.acquire() as conn:
@@ -367,13 +384,15 @@ class Worker:
                     # A running activity is judged at its own rule's cell,
                     # over the whole 2 h: a gap before the next shower does
                     # not end it; no data leaves it alone.
-                    current = None
+                    current = running_cell = None
                     r = running.get(device_id)
-                    if r is not None and r['cell_key'] in points:
-                        current = live.analyze_rain(
-                            points[r['cell_key']], now, in_phase=True)
+                    if r is not None:
+                        running_cell = r['cell_key']
+                        if running_cell in points:
+                            current = live.analyze_rain(
+                                points[running_cell], now, in_phase=True)
                     if await livectl.rain_tick(conn, self.client, device,
-                                               winner, current,
+                                               winner, current, running_cell,
                                                now) and winner:
                         # only the winner rides on the activity (§19);
                         # other places notify as usual
@@ -464,6 +483,10 @@ class Worker:
             await conn.execute(
                 'DELETE FROM push.devices WHERE last_seen < $1',
                 now - DEVICE_RETENTION)
+            # Locks of devices that are not in the middle of a decision
+            for key in [k for k, v in livectl.LOCKS.items()
+                        if not v.locked()]:
+                del livectl.LOCKS[key]
             # Cells no rule refers to any more
             await conn.execute(
                 'DELETE FROM push.cells c WHERE NOT EXISTS ('

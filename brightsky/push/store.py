@@ -261,17 +261,28 @@ async def end_activity(conn, device_id, activity_id, now, cooldown):
     """The user dismissed the activity: stop updating it, start the
     cooldown, and remember it so the same event does not come back unless
     it escalates. Only the named activity — a late DELETE for an older one
-    must not end a newer one."""
-    await conn.execute(
-        """
-        UPDATE push.live_activities SET
-          activity_token = NULL,
-          ended_at = $3,
-          cooldown_until = $4,
-          state = state || '{"dismissed": true}'::jsonb
-        WHERE device_id = $1 AND activity_id = $2 AND ended_at IS NULL
-        """,
-        device_id, activity_id, now, now + cooldown)
+    must not end a newer one. A server-started activity whose token the
+    app has not reported yet has no id here; a DELETE naming an unknown id
+    then ends that one (the only running activity without an id) and
+    records the id."""
+    status = await conn.execute(
+        _END_ACTIVITY + 'WHERE device_id = $1 AND activity_id = $2 '
+        'AND ended_at IS NULL', device_id, activity_id, now, now + cooldown)
+    if status == 'UPDATE 0':
+        await conn.execute(
+            _END_ACTIVITY + 'WHERE device_id = $1 AND activity_id IS NULL '
+            'AND ended_at IS NULL', device_id, activity_id, now,
+            now + cooldown)
+
+
+_END_ACTIVITY = """
+    UPDATE push.live_activities SET
+      activity_id = $2,
+      activity_token = NULL,
+      ended_at = $3,
+      cooldown_until = $4,
+      state = state || '{"dismissed": true}'::jsonb
+"""
 
 
 async def mark_source(conn, source, now, error=None):

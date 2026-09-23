@@ -16,7 +16,8 @@ from brightsky.push.rules import parse_rule
 from .test_push_apns import StubAPNs, make_client
 from .test_push_worker import (
     CELL, DEVICE, NOW, RAIN_RULE, WARN_RULE, add_alert, bodies, ntick, push_db,
-    radar, rain_rule, register_live, report_token, run, tick, warning_rule,
+    radar, rain_rule, register, register_live, report_token, run, tick,
+    warning_rule,
 )
 
 
@@ -438,7 +439,17 @@ def golden():
         now=t, stale=t + 30 * datetime.timedelta(minutes=1),
         alert_title='Regen zieht auf', alert_body=live.rain_headline(rain, t),
         sound=False)
-    return {'alert': alert, 'digest': digest, 'live_start': start}
+    w = ev.Warning('2.49.0.0.276.0.DWD.PVW.example', 3, 'gewitter',
+                   'STARKES GEWITTER', 'h', t - 30 * datetime.timedelta(
+                       minutes=1), t + 150 * datetime.timedelta(minutes=1))
+    update = payloads.live_update(
+        live.warning_content(w, 'active', t,
+                             '6f96a1c2-0000-4000-8000-000000000003',
+                             escalated_from=2),
+        now=t, stale=w.end, alert_title='Unwetterwarnung',
+        alert_body=live.warning_headline(w, 'active', t))
+    return {'alert': alert, 'digest': digest, 'live_start': start,
+            'live_update_warning': update}
 
 
 if __name__ == '__main__':
@@ -447,3 +458,269 @@ if __name__ == '__main__':
         (FIXTURES / f'{name}.json').write_text(
             json.dumps(payload, ensure_ascii=False, indent=2) + '\n')
         print('wrote', FIXTURES / f'{name}.json')
+
+
+# MARK: - Round 2 (verification of 105fe67)
+
+def rain_rows(push_db):
+    return push_db.fetch('SELECT ended_at IS NULL, state, rule_id '
+                         'FROM push.live_activities')
+
+
+def test_r1_orphaned_rain_activity_ends(push_db, monkeypatch):
+    """R1: the live rule is deleted while its activity runs."""
+    stub = StubAPNs()
+    run(push_db, register_live([rain_rule()]), stub, monkeypatch)
+    radar(monkeypatch, [0.2] * 24)
+    run(push_db, ntick(NOW), stub, monkeypatch)
+    report_token(push_db)
+    run(push_db, register_live([]), stub, monkeypatch)   # rule removed
+    run(push_db, ntick(NOW + 5 * M), stub, monkeypatch)
+    assert bodies(stub)[-1][2]['aps']['event'] == 'end'
+    assert rain_rows(push_db)[0][0] is False
+
+
+def test_r1_lifetime_is_checked_before_missing_data(push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([rain_rule()]), stub, monkeypatch)
+    radar(monkeypatch, [0.2] * 24)
+    run(push_db, ntick(NOW), stub, monkeypatch)
+    report_token(push_db)
+
+    async def fail(self, lat, lon, now):
+        raise RuntimeError('radar down')
+    monkeypatch.setattr(sources.NowcastSource, 'fetch', fail)
+    with pytest.raises(RuntimeError):
+        run(push_db, ntick(NOW + 4 * H + M), stub, monkeypatch)
+    # every lookup failed, so the tick raised before any activity work;
+    # with one cell still answering, the 4 h limit ends the stale one:
+    radar(monkeypatch, [0.2] * 24)
+    run(push_db, ntick(NOW + 4 * H + 2 * M), stub, monkeypatch)
+    assert bodies(stub)[-1][2]['aps']['event'] == 'end'
+
+
+def test_r2_an_update_cannot_undo_a_dismissal(push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([rain_rule()]), stub, monkeypatch)
+    radar(monkeypatch, [0.2] * 24)
+    run(push_db, ntick(NOW), stub, monkeypatch)
+    report_token(push_db)
+
+    async def race(worker, pool):
+        from brightsky.push import livectl
+        async with pool.acquire() as conn:
+            row = await livectl.load(conn, DEVICE)
+            await store.end_activity(conn, DEVICE, 'X', NOW + M,
+                                     datetime.timedelta(minutes=60))
+            # the worker had loaded the row before the dismissal landed
+            rain = live.analyze_rain([live.Point(NOW + i * 5 * M, 1.0)
+                                      for i in range(24)], NOW + M)
+            c = live.Candidate('rain', RAIN_RULE, NOW, rain=rain,
+                               cell_key=CELL)
+            await livectl.update(conn, worker.client, device_of(conn),
+                                 row, c, NOW + M)
+    def device_of(_):
+        return {'id': DEVICE, 'environment': 'sandbox',
+                'push_to_start_token': None, 'live_activities_enabled': True}
+    run(push_db, race, stub, monkeypatch)
+    ended, state, _ = rain_rows(push_db)[0]
+    assert ended is False and state['dismissed'] is True
+
+
+def test_r3_a_start_that_timed_out_is_not_repeated(push_db, monkeypatch):
+    stub = StubAPNs([(0, None)])
+    run(push_db, register_live([rain_rule()]), stub, monkeypatch)
+    radar(monkeypatch, [0.2] * 24)
+    run(push_db, ntick(NOW), stub, monkeypatch)
+    assert len(stub.requests) == 1
+    run(push_db, ntick(NOW + M), stub, monkeypatch)
+    assert len(stub.requests) == 1       # still waiting for the token
+    run(push_db, ntick(NOW + 3 * M), stub, monkeypatch)
+    # given up after 2 min: a new start
+    assert [b[2]['aps']['event'] for b in bodies(stub)] == ['start', 'start']
+
+
+def test_r4_dead_activity_token_counts_as_dismissal(push_db, monkeypatch):
+    stub = StubAPNs([(200, None), (410, 'Unregistered')])
+    run(push_db, register_live([warning_rule(WARN_RULE,
+                                             live={'night': False})]),
+        stub, monkeypatch)
+    add_alert(push_db, 'A', 'moderate')
+    run(push_db, tick(NOW), stub, monkeypatch)
+    report_token(push_db)
+    add_alert(push_db, 'B', 'severe')          # escalation → update → 410
+    push_db.fetch("DELETE FROM alerts WHERE alert_id = 'A' RETURNING id")
+    run(push_db, tick(NOW + M), stub, monkeypatch)
+    ended, state, _ = rain_rows(push_db)[0]
+    assert ended is False and state['dismissed'] is True
+
+
+def test_r5_rain_elsewhere_ends_and_starts_its_own(push_db, monkeypatch):
+    """Another rule's rain wins: the running activity is ended and the
+    winner gets its own — never another place's content on this one."""
+    stub = StubAPNs()
+    berlin_rule = dict(rain_rule(), id='00000000-0000-0000-0000-0000000000b2',
+                       cellKey='52.52,13.41')
+    run(push_db, register_live([rain_rule(), berlin_rule]), stub,
+        monkeypatch)
+    by_lat = {53.55: [0.2] * 24, 52.52: [0] * 24}
+
+    async def fetch(self, lat, lon, now):
+        return [live.Point(NOW + i * 5 * M, v)
+                for i, v in enumerate(by_lat[lat])]
+    monkeypatch.setattr(sources.NowcastSource, 'fetch', fetch)
+    run(push_db, ntick(NOW), stub, monkeypatch)
+    report_token(push_db)
+    # Hamburg's rain will start again in 50 min; Berlin's rain is now.
+    by_lat[53.55] = [0] * 12 + [0.2] * 12
+    by_lat[52.52] = [0.2] * 24
+    run(push_db, ntick(NOW + 5 * M), stub, monkeypatch)
+    lives = [b[2]['aps'] for b in bodies(stub)
+             if b[0] == 'liveactivity']
+    assert [a['event'] for a in lives] == ['start', 'end', 'start']
+    assert lives[-1]['content-state']['ruleId'] == berlin_rule['id']
+
+
+def test_r5_the_same_rule_moving_follows_the_user(push_db, monkeypatch):
+    """§17.5: the cell is content — a „Mein Standort" rule that moves keeps
+    its activity."""
+    stub = StubAPNs()
+    run(push_db, register_live([rain_rule()]), stub, monkeypatch)
+    radar(monkeypatch, [0.2] * 24)
+    run(push_db, ntick(NOW), stub, monkeypatch)
+    report_token(push_db)
+    moved = dict(rain_rule(), cellKey='52.52,13.41')
+    run(push_db, register_live([moved]), stub, monkeypatch)
+    run(push_db, ntick(NOW + 5 * M), stub, monkeypatch)
+    assert [b[2]['aps']['event'] for b in bodies(stub)] == ['start']
+
+
+def test_6a_one_device_failing_delivery_does_not_stop_others(
+        push_db, monkeypatch):
+    from brightsky.push import dispatcher
+    stub = StubAPNs()
+    run(push_db, register([warning_rule(WARN_RULE)]), stub, monkeypatch)
+    add_alert(push_db, 'A', 'moderate')
+    original = dispatcher.apply
+    calls = []
+
+    async def flaky(conn, client, device, items, now, digest_date=None):
+        calls.append(device['id'])
+        raise RuntimeError('boom')
+    monkeypatch.setattr(dispatcher, 'apply', flaky)
+    run(push_db, tick(NOW), stub, monkeypatch)       # does not raise
+    assert calls
+    [(ok,)] = push_db.fetch("SELECT last_error IS NULL FROM "
+                            "push.source_status WHERE source = 'warnings'")
+    assert ok
+    monkeypatch.setattr(dispatcher, 'apply', original)
+
+
+def test_6b_geoserver_timeout_is_no_data_for_that_cell(push_db,
+                                                        monkeypatch):
+    import requests
+    from brightsky import query
+    stub = StubAPNs()
+    run(push_db, register([warning_rule(WARN_RULE)]), stub, monkeypatch)
+    with push_db.cursor() as cur:
+        cur.execute('UPDATE push.cells SET warn_cell_id = NULL, '
+                    'resolved_at = NULL')
+    push_db.commit()
+
+    def timeout(lat, lon):
+        raise requests.Timeout('GeoServer down')
+    monkeypatch.setattr(query._warn_cells, 'find', timeout)
+    add_alert(push_db, 'A', 'moderate')
+    run(push_db, tick(NOW), stub, monkeypatch)       # does not raise
+    [(resolved,)] = push_db.fetch('SELECT resolved_at FROM push.cells')
+    assert resolved is not None
+
+
+def test_10_ticks_for_one_device_serialize():
+    from brightsky.push import livectl
+    order = []
+
+    async def hold(name):
+        async with livectl.lock('d'):
+            order.append(f'{name} in')
+            await asyncio.sleep(0.01)
+            order.append(f'{name} out')
+
+    async def both():
+        await asyncio.gather(hold('rain'), hold('warning'))
+    asyncio.run(both())
+    assert order in (['rain in', 'rain out', 'warning in', 'warning out'],
+                     ['warning in', 'warning out', 'rain in', 'rain out'])
+
+
+def test_10_cleanup_prunes_idle_locks(push_db, monkeypatch):
+    from brightsky.push import livectl
+    livectl.lock('someone')
+
+    async def clean(worker, pool):
+        await worker.cleanup_tick(NOW)
+    run(push_db, clean, StubAPNs(), monkeypatch)
+    assert 'someone' not in livectl.LOCKS
+
+
+def test_13_delete_before_the_token_ends_the_unnamed_activity(
+        push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([rain_rule()]), stub, monkeypatch)
+    radar(monkeypatch, [0.2] * 24)
+    run(push_db, ntick(NOW), stub, monkeypatch)
+
+    async def dismiss(worker, pool):
+        async with pool.acquire() as conn:
+            await store.end_activity(conn, DEVICE, 'EARLY', NOW + M,
+                                     datetime.timedelta(minutes=60))
+    run(push_db, dismiss, stub, monkeypatch)
+    [(ended, activity_id)] = push_db.fetch(
+        'SELECT ended_at IS NOT NULL, activity_id FROM push.live_activities')
+    assert (ended, activity_id) == (True, 'EARLY')
+
+
+def test_18_duration_counts_from_the_first_real_rain():
+    # drizzle, then real rain for 3 steps: 15 min, not 25
+    mm = [0] * 2 + [0.015, 0.015, 0.2, 0.2, 0.2] + [0] * 17
+    r = live.analyze_rain([live.Point(NOW + i * 5 * M, v)
+                           for i, v in enumerate(mm)], NOW)
+    assert r.duration_minutes == 15
+
+
+def test_19_migrate_waits_for_the_advisory_lock(db):
+    import threading
+    import psycopg2
+    from brightsky import db as dbmod
+    from brightsky.settings import settings
+    holder = psycopg2.connect(settings.DATABASE_URL)
+    with holder.cursor() as cur:
+        cur.execute('SELECT pg_advisory_lock(%s)', (dbmod.MIGRATION_LOCK,))
+    t = threading.Thread(target=dbmod.migrate)
+    t.start()
+    t.join(0.5)
+    assert t.is_alive(), 'migrate() must wait for the lock'
+    with holder.cursor() as cur:
+        cur.execute('SELECT pg_advisory_unlock(%s)', (dbmod.MIGRATION_LOCK,))
+    t.join(10)
+    assert not t.is_alive()
+    holder.close()
+
+
+def test_24_health_shows_no_device_count(db):
+    from fastapi.testclient import TestClient
+    from brightsky.push import api
+    with TestClient(api.app) as client:
+        body = client.get('/health').json()
+    assert 'devices' not in body
+    assert body['warnings'] == []
+
+
+def test_15_malformed_content_length_is_400(db):
+    from fastapi.testclient import TestClient
+    from brightsky.push import api
+    with TestClient(api.app) as client:
+        resp = client.post('/v1/devices', content=b'{}',
+                           headers={'Content-Length': 'x',
+                                    'Content-Type': 'application/json'})
+    assert resp.status_code == 400

@@ -132,7 +132,15 @@ def analyze_rain(points, now, in_phase=False):
                        detail='Der Regen ist durch', duration_minutes=0,
                        **base)
     first_i, _ = real[0]
-    duration = next((n for i, n in wet_runs if i <= first_i < i + n), 0) * 5
+    # From the first real rain on, as long as it stays wet — like the
+    # app's `rainMatch` (`drop { < first }.prefix { > 0.01 }`), not the
+    # whole wet run around it.
+    wet = 0
+    for m in mm[first_i:]:
+        if m <= WET_MM_PER_5MIN:
+            break
+        wet += 1
+    duration = wet * 5
     if in_phase:
         n = len(real)
         what = ('ein Schauer' if n == 1

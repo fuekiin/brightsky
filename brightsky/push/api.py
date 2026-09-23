@@ -57,8 +57,11 @@ class BodyLimit:
         if scope['type'] != 'http':
             return await self.app(scope, receive, send)
         length = dict(scope['headers']).get(b'content-length')
-        if length is not None and int(length) > MAX_BODY:
-            return await _too_large(send)
+        if length is not None:
+            if not length.isdigit():
+                return await _reply(send, 400, b'bad content-length')
+            if int(length) > MAX_BODY:
+                return await _too_large(send)
         seen = 0
 
         async def limited():
@@ -80,10 +83,14 @@ class _TooLarge(Exception):
 
 
 async def _too_large(send):
-    await send({'type': 'http.response.start', 'status': 413,
+    await _reply(send, 413, b'body too large')
+
+
+async def _reply(send, status, detail):
+    await send({'type': 'http.response.start', 'status': status,
                 'headers': [(b'content-type', b'application/json')]})
     await send({'type': 'http.response.body',
-                'body': b'{"detail":"body too large"}'})
+                'body': b'{"detail":"' + detail + b'"}'})
 
 
 app = FastAPI(

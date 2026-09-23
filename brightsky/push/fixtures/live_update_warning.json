@@ -1,0 +1,30 @@
+{
+  "aps": {
+    "timestamp": 1790164800,
+    "event": "update",
+    "content-state": {
+      "phase": {
+        "warning": {
+          "_0": {
+            "stage": "active",
+            "level": 3,
+            "event": "Starkes Gewitter",
+            "onset": 811855800.0,
+            "expires": 811866600.0,
+            "detail": "Unwetterwarnung · bis 16:30 · hochgestuft von markant",
+            "escalatedFrom": 2
+          }
+        }
+      },
+      "placeName": "",
+      "ruleId": "6f96a1c2-0000-4000-8000-000000000003",
+      "generatedAt": 811857600.0
+    },
+    "stale-date": 1790173800,
+    "alert": {
+      "title": "Unwetterwarnung",
+      "body": "Starkes Gewitter bis 16:30",
+      "sound": "default"
+    }
+  }
+}

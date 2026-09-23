@@ -13,6 +13,8 @@ logger = logging.getLogger('brightsky.push.sender')
 
 RETRY_DELAYS = (1.0, 4.0, 15.0)
 DEFAULT_EXPIRATION = datetime.timedelta(hours=6)
+# as for a dismissal through the app (api.ACTIVITY_COOLDOWN)
+DISMISS_COOLDOWN = datetime.timedelta(minutes=60)
 
 
 def client_from_settings():
@@ -85,11 +87,17 @@ async def forget_token(conn, device_id, token_field, token, now):
             'UPDATE push.devices SET push_to_start_token = NULL '
             'WHERE id = $1 AND push_to_start_token = $2', device_id, token)
     elif token_field == 'activity_token':
-        # The activity is gone on the device: stop driving it.
+        # The activity is gone on the device — the user swiped it away and
+        # the app's DELETE never reached us. Treat it as that dismissal:
+        # remembered for warnings, cooldown for rain.
         await conn.execute(
-            'UPDATE push.live_activities SET activity_token = NULL, '
-            'ended_at = COALESCE(ended_at, $3) '
-            'WHERE device_id = $1 AND activity_token = $2',
-            device_id, token, now)
+            """
+            UPDATE push.live_activities SET
+              activity_token = NULL,
+              ended_at = COALESCE(ended_at, $3),
+              cooldown_until = $4,
+              state = state || '{"dismissed": true}'::jsonb
+            WHERE device_id = $1 AND activity_token = $2
+            """, device_id, token, now, now + DISMISS_COOLDOWN)
     else:
         raise ValueError(token_field)
