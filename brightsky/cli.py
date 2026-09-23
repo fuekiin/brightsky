@@ -180,3 +180,24 @@ def push_serve(bind, forwarded_allow_ips):
         proxy_headers=True,
         forwarded_allow_ips=forwarded_allow_ips,
     )
+
+
+@cli.command(name='push-send')
+@click.argument('device_id')
+@click.option(
+    '--kind', default='alert',
+    type=click.Choice(['alert', 'start', 'update', 'end']),
+    help='A notification, or a Live Activity start/update/end')
+@click.option('--title', default='nano Testmitteilung')
+@click.option('--body', default='Hallo vom Push-Server.')
+@click.option(
+    '--payload', 'payload_file', type=click.File(),
+    help='Send this JSON instead of the built-in example')
+def push_send(device_id, kind, title, body, payload_file):
+    """Send a hand-made push to a registered device (design §12.2)."""
+    import asyncio
+    from brightsky.push.handmade import send_handmade
+    payload = json.load(payload_file) if payload_file else None
+    result = asyncio.run(
+        send_handmade(device_id, kind, title, body, payload))
+    print(json.dumps(result))
