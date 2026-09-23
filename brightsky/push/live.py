@@ -104,8 +104,9 @@ def analyze_rain(points, now, in_phase=False):
     peak = max(mm)
     peak_at = at[mm.index(peak)] if peak >= RAIN_MM_PER_5MIN else None
     first_rain_at = at[real[0][0]] if real else None
-    raining = mm[0] >= RAIN_MM_PER_5MIN or (
-        len(mm) > 1 and at[0] < now and mm[1] >= RAIN_MM_PER_5MIN)
+    # Raining now means real rain (≥ 10 min, `RuleEvaluator.firstRealRain`)
+    # that has begun: one noisy step is not a shower.
+    raining = any(i <= 1 and at[i] <= now for i, _ in real)
     base = dict(bucket_start=start, buckets=tuple(mm), peak=peak,
                 peak_at=peak_at, first_rain_at=first_rain_at)
     label = f'{intensity_label(peak)}er Regen'
@@ -147,11 +148,14 @@ def analyze_rain(points, now, in_phase=False):
 
 
 def rain_content(rain, now, rule_id, context=None):
+    # The app's bars are mm/h (`RainLive.buckets`); the radar and every
+    # threshold here are mm per 5 minutes.
     return payloads.rain_content(
         state=rain.state, change_at=rain.change_at, detail=rain.detail,
         bucket_start=rain.bucket_start,
-        buckets=[round(b, 3) for b in rain.buckets], peak_at=rain.peak_at,
-        generated_at=now, rule_id=rule_id, context=context)
+        buckets=[round(b * 12, 2) for b in rain.buckets],
+        peak_at=rain.peak_at, generated_at=now, rule_id=rule_id,
+        context=context)
 
 
 def rain_headline(rain, now):
@@ -186,25 +190,41 @@ def warning_detail(w, now):
     return ' · '.join(parts)
 
 
+# „hochgestuft von markant" — the level as the app's demo says it
+ESCALATED_FROM = {1: 'Stufe 1', 2: 'markant', 3: 'Unwetter', 4: 'extrem'}
+
+
+def cancelled_detail(now):
+    return f'Der DWD hat die Warnung um {ev.clock(now)} aufgehoben'
+
+
 def warning_content(w, stage, now, rule_id, escalated_from=None,
                     context=None):
     detail = warning_detail(w, now)
     if escalated_from:
-        detail += (' · hochgestuft von '
-                   f'{ev.LEVEL_NAMES[escalated_from].split()[0].lower()}')
+        detail += f' · hochgestuft von {ESCALATED_FROM[escalated_from]}'
     if stage == 'cancelled':
-        detail = (f'Der DWD hat die Warnung um {ev.clock(now)} '
-                  'aufgehoben')
+        detail = cancelled_detail(now)
     return payloads.warning_content(
         stage=stage, level=w.level, event=_event_name(w), onset=w.onset,
         expires=w.end, detail=detail, generated_at=now, rule_id=rule_id,
         escalated_from=escalated_from, context=context)
 
 
+LOWER_WORDS = {'mit', 'und', 'oder', 'von', 'in', 'im', 'bis', 'an', 'am'}
+
+
 def _event_name(w):
-    """„GEWITTER" → „Gewitter", „STURMBÖEN" → „Sturmböen"."""
+    """DWD's uppercase event names, readable: „GEWITTER" → „Gewitter",
+    „STARKES GEWITTER" → „Starkes Gewitter", „GEWITTER MIT HAGEL" →
+    „Gewitter mit Hagel". Mixed case is DWD's own and stays."""
     e = (w.event or '').strip()
-    return e[:1].upper() + e[1:].lower() if e.isupper() else e
+    if not e.isupper():
+        return e
+    words = e.lower().split()
+    return ' '.join(word if i and word in LOWER_WORDS else
+                    word[:1].upper() + word[1:]
+                    for i, word in enumerate(words))
 
 
 def warning_headline(w, stage, now):
@@ -231,6 +251,7 @@ class Candidate:
     # Warning thread key from rule_state (`dwd:<first alert id>`), stable
     # across DWD re-issues
     thread: str | None = None
+    cell_key: str | None = None
 
     @property
     def event_key(self):

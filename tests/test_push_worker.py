@@ -303,7 +303,10 @@ def test_rain_activity_starts_updates_quietly_and_ends(push_db, monkeypatch):
     push_type, token, payload = bodies(stub)[-1]
     assert (push_type, token, payload['aps']['event']) == (
         'liveactivity', 'ef', 'end')
-    assert payload['aps']['dismissal-date'] > payload['aps']['timestamp']
+    assert payload['aps']['dismissal-date'] == int(
+        (NOW + datetime.timedelta(minutes=25)).timestamp())
+    # stamped when sent, not when the tick began (review #10)
+    assert payload['aps']['timestamp'] > NOW.timestamp()
     [(cooldown,)] = push_db.fetch(
         'SELECT cooldown_until IS NOT NULL FROM push.live_activities')
     assert cooldown

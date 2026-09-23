@@ -3,22 +3,34 @@
 Decides from a device's live candidates and its row, then sends through
 `sender`. A live event the activity cannot carry — no push-to-start token,
 Live Activities off in iOS, APNs refusing the start, or losing precedence —
-is returned to the caller, which delivers it as an ordinary notification.
+is left to the caller, which delivers it as an ordinary notification.
+
+The warnings and nowcast loops both drive the same row, so every decision
+for a device runs under that device's lock.
 """
 
+import asyncio
+import collections
 import datetime
 import logging
+import time
 
 from brightsky.push import live, payloads, sender
 
 
 logger = logging.getLogger('brightsky.push.live')
 
+LOCKS = collections.defaultdict(asyncio.Lock)
+END_EXPIRATION = datetime.timedelta(hours=1)
 
-def active(row, now):
+
+def lock(device_id):
+    return LOCKS[str(device_id)]
+
+
+def active(row):
     return (row is not None and row['ended_at'] is None
-            and row['phase'] in ('rain', 'warning')
-            and now - row['started_at'] < live.LIVE_LEAD)
+            and row['phase'] in ('rain', 'warning'))
 
 
 async def load(conn, device_id):
@@ -28,6 +40,9 @@ async def load(conn, device_id):
 
 async def _save(conn, device_id, *, rule_id, phase, content, state, now,
                 started=False, ended=False, cooldown_until=None):
+    """`started` replaces the row for a new activity — before its start is
+    sent, so the app's token report (which can arrive within a second)
+    lands on the new row and is never overwritten."""
     await conn.execute(
         """
         INSERT INTO push.live_activities (
@@ -40,7 +55,6 @@ async def _save(conn, device_id, *, rule_id, phase, content, state, now,
           phase = excluded.phase,
           started_at = CASE WHEN $9 THEN excluded.started_at
                             ELSE push.live_activities.started_at END,
-          -- a new activity gets its own token from the app
           activity_token = CASE WHEN $9 THEN NULL
                                 ELSE push.live_activities.activity_token END,
           activity_id = CASE WHEN $9 THEN NULL
@@ -57,19 +71,25 @@ async def _save(conn, device_id, *, rule_id, phase, content, state, now,
 
 
 async def _push(conn, client, device, row, payload, *, start, alert, now,
-                rule_id, event_key):
+                rule_id, event_key, expiration):
     if start:
         token, field = device['push_to_start_token'], 'push_to_start_token'
     else:
         token, field = row and row['activity_token'], 'activity_token'
     if not token:
         return None
+    # ActivityKit drops a push older than the last one it applied: stamp it
+    # when it leaves, not when the tick began.
+    payload['aps']['timestamp'] = int(time.time())
     return await sender.deliver(
         conn, client, device_id=str(device['id']),
         environment=device['environment'], token=token, token_field=field,
         payload=payload, push_type='liveactivity',
         priority=10 if alert else 5, rule_id=rule_id,
-        occurrence_key=event_key, now=now)
+        occurrence_key=event_key, now=now,
+        expiration=payloads.unix(expiration),
+        # A start retried after a timeout may start a second activity.
+        retry=not start)
 
 
 def can_start(device):
@@ -112,42 +132,16 @@ def _state(c, now):
                 'class': r.peak_class}
     return {'event': c.event_key, 'level': c.level,
             'family': c.warning.family,
-            'stage': live.warning_stage(c.warning, now)}
+            'stage': live.warning_stage(c.warning, now),
+            'expires': c.warning.end.isoformat()}
 
 
-async def start_or_take_over(conn, client, device, row, c, now):
-    """Returns True when the activity now carries `c`."""
-    title, body = _alert_text(c, now)
-    sound = _sound(c, now)
-    content = _content(c, now)
-    if active(row, now) and row['activity_token']:
-        # Take over the running activity by update (§17.5).
-        payload = payloads.live_update(
-            content, now=now, stale=_stale(c, now),
-            alert_title=title if sound else None, alert_body=body)
-        result = await _push(conn, client, device, row, payload,
-                             start=False, alert=sound, now=now,
-                             rule_id=c.rule_id, event_key=c.event_key)
-        if result is not None and result.ok:
-            await _save(conn, device['id'], rule_id=c.rule_id,
-                        phase=c.kind, content=content, state=_state(c, now),
-                        now=now)
-            return True
-    if not can_start(device) or active(row, now):
-        return False
-    payload = payloads.live_start(
-        content, now=now, stale=_stale(c, now), alert_title=title,
-        alert_body=body, sound=sound)
-    result = await _push(conn, client, device, row, payload, start=True,
-                         alert=True, now=now, rule_id=c.rule_id,
-                         event_key=c.event_key)
-    if result is None or not result.ok:
-        return False
-    await _save(conn, device['id'], rule_id=c.rule_id, phase=c.kind,
-                content=content, state=_state(c, now), now=now, started=True)
-    logger.info('Device %s: started %s activity for %s', device['id'],
-                c.kind, c.event_key)
-    return True
+def _expiration(c, now):
+    """How long APNs may hold the push: a rain push is worthless after
+    half an hour, a warning push after the warning."""
+    if c.kind == 'rain':
+        return now + datetime.timedelta(minutes=30)
+    return max(c.warning.end, now + datetime.timedelta(minutes=30))
 
 
 def _stale(c, now):
@@ -155,6 +149,47 @@ def _stale(c, now):
     if c.kind == 'rain':
         return now + datetime.timedelta(minutes=30)
     return min(c.warning.end, now + live.LIVE_LEAD)
+
+
+async def start_or_take_over(conn, client, device, row, c, now):
+    """Returns True when the activity now carries `c`."""
+    title, body = _alert_text(c, now)
+    sound = _sound(c, now)
+    content = _content(c, now)
+    if active(row) and row['activity_token']:
+        # Take over the running activity by update (§17.5).
+        payload = payloads.live_update(
+            content, now=now, stale=_stale(c, now),
+            alert_title=title if sound else None, alert_body=body)
+        result = await _push(conn, client, device, row, payload,
+                             start=False, alert=sound, now=now,
+                             rule_id=c.rule_id, event_key=c.event_key,
+                             expiration=_expiration(c, now))
+        if result is not None and result.ok:
+            await _save(conn, device['id'], rule_id=c.rule_id,
+                        phase=c.kind, content=content, state=_state(c, now),
+                        now=now)
+            return True
+    if not can_start(device) or active(row):
+        return False
+    await _save(conn, device['id'], rule_id=c.rule_id, phase=c.kind,
+                content=content, state=_state(c, now), now=now, started=True)
+    payload = payloads.live_start(
+        content, now=now, stale=_stale(c, now), alert_title=title,
+        alert_body=body, sound=sound)
+    result = await _push(conn, client, device, None, payload, start=True,
+                         alert=True, now=now, rule_id=c.rule_id,
+                         event_key=c.event_key,
+                         expiration=_expiration(c, now))
+    if result is None or not result.ok:
+        await conn.execute(
+            'UPDATE push.live_activities SET ended_at = $2 '
+            'WHERE device_id = $1 AND activity_token IS NULL',
+            device['id'], now)
+        return False
+    logger.info('Device %s: started %s activity for %s', device['id'],
+                c.kind, c.event_key)
+    return True
 
 
 async def update(conn, client, device, row, c, now, *, alert=False,
@@ -166,7 +201,10 @@ async def update(conn, client, device, row, c, now, *, alert=False,
         alert_title=title if alert else None, alert_body=body)
     result = await _push(conn, client, device, row, payload, start=False,
                          alert=alert, now=now, rule_id=c.rule_id,
-                         event_key=c.event_key)
+                         event_key=c.event_key,
+                         expiration=_expiration(c, now))
+    if result is not None and result.token_dead:
+        return result    # the activity is gone; the sender ended the row
     state = _state(c, now)
     if stage:
         state['stage'] = stage
@@ -177,115 +215,148 @@ async def update(conn, client, device, row, c, now, *, alert=False,
     return result
 
 
-async def end(conn, client, device, row, content, now, *, rule_id,
-              event_key, cooldown=True):
+async def end(conn, client, device, row, content, now, *, cooldown=True,
+              mark=None):
+    rule_id = row['rule_id'] and str(row['rule_id'])
+    state = dict(row['state'])
     payload = payloads.live_end(content, now=now,
                                 dismissal=now + live.DISMISS_AFTER)
     await _push(conn, client, device, row, payload, start=False,
-                alert=False, now=now, rule_id=rule_id, event_key=event_key)
+                alert=False, now=now, rule_id=rule_id,
+                event_key=state.get('event'),
+                expiration=now + END_EXPIRATION)
+    if mark:
+        state[mark] = True
     await _save(conn, device['id'], rule_id=rule_id, phase=row['phase'],
-                content=content, state=dict(row['state']), now=now,
-                ended=True,
+                content=content, state=state, now=now, ended=True,
                 cooldown_until=now + live.COOLDOWN if cooldown else None)
-    logger.info('Device %s: ended %s activity', device['id'], row['phase'])
+    logger.info('Device %s: ended %s activity (%s)', device['id'],
+                row['phase'], mark or 'done')
 
 
 # MARK: - Rain
 
-def rain_due_update(row, c, now):
+def rain_due_update(row, rain, now):
     """Only when the change moved by > 5 min or the class changed, and
     at most every ~10 min unless it escalates (§17.3)."""
     s = row['state']
-    r = c.rain
-    escalated = r.peak_class > s.get('class', 0)
-    changed = r.state != s.get('state') or r.peak_class != s.get('class')
+    escalated = rain.peak_class > s.get('class', 0)
+    changed = (rain.state != s.get('state')
+               or rain.peak_class != s.get('class'))
     before = s.get('changeAt')
-    if r.change_at and before:
-        moved = abs(r.change_at - datetime.datetime.fromisoformat(before))
+    if rain.change_at and before:
+        moved = abs(rain.change_at - datetime.datetime.fromisoformat(before))
         changed = changed or moved > live.CHANGE_MOVED
     recent = (row['last_update_at'] is not None
               and now - row['last_update_at'] < live.UPDATE_BUDGET)
     return changed and (escalated or not recent), escalated
 
 
-async def rain_tick(conn, client, device, candidate, now):
-    """One device's rain activity per nowcast cycle. Returns True when the
-    candidate is carried live (no notification needed)."""
-    row = await load(conn, device['id'])
-    if active(row, now) and row['phase'] == 'warning':
-        return False
-    if active(row, now):
-        r = candidate.rain if candidate else None
-        too_old = now - row['started_at'] >= live.MAX_RAIN_LIFETIME
-        if r is None or r.state == 'ended' or too_old:
-            content = dict(row['last_content'])
-            if r is not None:
-                content = live.rain_content(r, now, row['rule_id'] and
-                                            str(row['rule_id']))
-            await end(conn, client, device, row, content, now,
-                      rule_id=row['rule_id'] and str(row['rule_id']),
-                      event_key='rain')
+async def rain_tick(conn, client, device, candidate, rain, now):
+    """One device's rain activity per nowcast cycle.
+
+    `candidate`: a live rain rule's event that may start an activity (real
+    rain within 60 min). `rain`: the nowcast at the running activity's
+    rule cell, or None when there is no data — then a running activity is
+    left alone. Returns True when the event is carried live (or held back
+    on purpose), so no notification is needed.
+    """
+    async with lock(device['id']):
+        row = await load(conn, device['id'])
+        if active(row) and row['phase'] == 'warning':
+            return False
+        if active(row):
+            if rain is None:
+                return True
+            too_old = now - row['started_at'] >= live.MAX_RAIN_LIFETIME
+            rule_id = row['rule_id'] and str(row['rule_id'])
+            if rain.state == 'ended' or too_old:
+                # „Trocken für die nächsten 2 Stunden", then end (§4.5)
+                await end(conn, client, device, row,
+                          live.rain_content(rain, now, rule_id), now)
+                return True
+            c = candidate or live.Candidate('rain', rule_id, now, rain=rain)
+            due, escalated = rain_due_update(row, c.rain, now)
+            if due:
+                await update(conn, client, device, row, c, now,
+                             alert=escalated and not live.is_night(now))
             return True
-        due, escalated = rain_due_update(row, candidate, now)
-        if due:
-            await update(conn, client, device, row, candidate, now,
-                         alert=escalated and not live.is_night(now))
-        return True
-    if candidate is None or candidate.rain.state == 'ended':
-        return False
-    cooling = (row is not None and row['cooldown_until']
-               and now < row['cooldown_until']
-               and candidate.rain.peak_class <= row['state'].get('class', 0)
-               and row['phase'] == 'rain')
-    if cooling:
-        return True    # quiet on purpose: no notification either
-    return await start_or_take_over(conn, client, device, row, candidate,
-                                    now)
+        if candidate is None or candidate.rain.state == 'ended':
+            return False
+        cooling = (row is not None and row['phase'] == 'rain'
+                   and row['cooldown_until'] and now < row['cooldown_until']
+                   and candidate.rain.peak_class
+                   <= row['state'].get('class', 0))
+        if cooling:
+            return True    # quiet on purpose: no notification either
+        return await start_or_take_over(conn, client, device, row,
+                                        candidate, now)
 
 
 # MARK: - Warnings
+
+def _cancelled(row, now):
+    content = dict(row['last_content'])
+    phase = dict(content['phase']['warning']['_0'])
+    phase['stage'] = 'cancelled'
+    phase['detail'] = live.cancelled_detail(now)
+    content['phase'] = {'warning': {'_0': phase}}
+    return content
+
 
 async def warning_tick(conn, client, device, candidate, present, now):
     """One device's warning activity per warnings cycle.
 
     `candidate`: the winning live warning or None. `present`: whether the
-    running activity's alert thread is still in DWD's snapshot.
-    Returns True when the candidate is carried live."""
-    row = await load(conn, device['id'])
-    running = active(row, now) and row['phase'] == 'warning'
-    if running:
-        s = row['state']
-        same = candidate is not None and s.get('event') == candidate.event_key
-        if not present and not same:
-            # Cancelled: „Aufgehoben", then end (§17.4).
-            content = dict(row['last_content'])
-            content['phase']['warning']['_0']['stage'] = 'cancelled'
-            content['phase']['warning']['_0']['detail'] = (
-                'Der DWD hat die Warnung aufgehoben')
-            await end(conn, client, device, row, content, now,
-                      rule_id=row['rule_id'] and str(row['rule_id']),
-                      event_key=s.get('event'), cooldown=False)
-            return False
-        if candidate is None:
-            expires = row['last_content']['phase']['warning']['_0'][
-                'expires']
-            if payloads.swift_date(now) >= expires:
+    running activity's warning is still in DWD's snapshot. Returns True
+    when the candidate is carried live (or held back on purpose)."""
+    async with lock(device['id']):
+        row = await load(conn, device['id'])
+        s = row['state'] if row is not None else {}
+        if active(row) and row['phase'] == 'warning':
+            expires = s.get('expires')
+            if expires and datetime.datetime.fromisoformat(expires) <= now:
+                # Expiry is not a cancellation: end, no „aufgehoben".
                 await end(conn, client, device, row,
-                          dict(row['last_content']), now,
-                          rule_id=row['rule_id'] and str(row['rule_id']),
-                          event_key=s.get('event'), cooldown=False)
+                          dict(row['last_content']), now, cooldown=False)
+                return False
+            same = (candidate is not None
+                    and s.get('event') == candidate.event_key)
+            if not same and not present:
+                await end(conn, client, device, row, _cancelled(row, now),
+                          now, cooldown=False)
+                return False
+            if candidate is None:
+                return False
+            if same:
+                if now - row['started_at'] >= live.LIVE_LEAD:
+                    # iOS keeps an activity ~8 h; end it cleanly and do not
+                    # restart the same event (§19). Tab and notification
+                    # cover the rest.
+                    await end(conn, client, device, row,
+                              dict(row['last_content']), now,
+                              cooldown=False, mark='lifetime')
+                    return True
+                stage = live.warning_stage(candidate.warning, now)
+                escalated = candidate.level > s.get('level', 0)
+                reissued = candidate.warning.end.isoformat() != expires
+                if escalated or stage != s.get('stage') or reissued:
+                    # Escalation alerts; a new stage or a re-issue with
+                    # another expiry is a silent update (§17.4).
+                    await update(
+                        conn, client, device, row, candidate, now,
+                        alert=escalated,
+                        escalated_from=s.get('level') if escalated else None,
+                        stage=stage)
+                return True
+        if candidate is None:
             return False
-        if same:
-            stage = live.warning_stage(candidate.warning, now)
-            escalated = candidate.level > s.get('level', 0)
-            if escalated or stage != s.get('stage'):
-                await update(
-                    conn, client, device, row, candidate, now,
-                    alert=escalated,
-                    escalated_from=s.get('level') if escalated else None,
-                    stage=stage)
+        # An event the user dismissed, or that ran its 8 hours, does not
+        # come back unless it escalates.
+        if (row is not None and row['ended_at'] is not None
+                and s.get('event') == candidate.event_key
+                and (s.get('dismissed') or s.get('lifetime'))
+                and candidate.level <= s.get('level', 0)):
             return True
-    if candidate is None:
-        return False
-    return await start_or_take_over(conn, client, device, row, candidate,
-                                    now)
+        return await start_or_take_over(conn, client, device, row,
+                                        candidate, now)

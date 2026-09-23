@@ -487,6 +487,9 @@ class WarnCellManager:
             resp = requests.get(
                 settings.WARN_CELLS_URL,
                 headers={'User-Agent': USER_AGENT},
+                # nano: push-work resolves cells from a loop; a hung
+                # GeoServer must not hang it
+                timeout=60,
             )
             with open(path, 'wb') as f:
                 f.write(resp.content)

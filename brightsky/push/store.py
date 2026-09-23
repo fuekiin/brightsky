@@ -2,6 +2,7 @@
 
 import contextlib
 import hashlib
+import re
 import json
 import secrets
 import uuid
@@ -42,6 +43,9 @@ def secret_matches(secret, secret_hash):
     return secrets.compare_digest(hash_secret(secret), secret_hash)
 
 
+MIN_ADOPT_SECRET = 32
+
+
 class AuthError(Exception):
     pass
 
@@ -58,6 +62,11 @@ async def authenticate(conn, device_id, bearer):
         raise UnknownDevice()
     if bearer is None or not secret_matches(bearer, row['secret_hash']):
         raise AuthError()
+
+
+async def device_exists(conn, device_id):
+    return await conn.fetchval(
+        'SELECT true FROM push.devices WHERE id = $1', device_id) or False
 
 
 async def register(conn, device, bearer, now):
@@ -81,6 +90,11 @@ async def register(conn, device, bearer, now):
             secret_hash = hash_secret(new_secret_value)
             event = 'created' if row is None else 'taken_over'
         elif row is None:
+            # Adopting is only for secrets this server once issued (256
+            # random bits); anything shorter is refused, and the app's
+            # retry without it registers afresh.
+            if len(bearer) < MIN_ADOPT_SECRET:
+                raise AuthError()
             secret_hash = hash_secret(bearer)
             event = 'adopted'
         elif secret_matches(bearer, row['secret_hash']):
@@ -139,11 +153,24 @@ async def register(conn, device, bearer, now):
                 'WHERE id = ANY($1::uuid[]) AND device_id <> $2',
                 [r.id for r, _ in parsed], device['deviceId'])
         }
+        known_cells = {r['cell_key'] for r in await conn.fetch(
+            'SELECT cell_key FROM push.cells WHERE cell_key = ANY($1)',
+            list({r.cell_key for r, _ in parsed}))}
+        free_cells = settings.PUSH_MAX_CELLS - await conn.fetchval(
+            'SELECT count(*) FROM push.cells')
         keep = []
         for rule, raw in parsed:
             if rule.id in foreign:
                 rejected.append((rule.id, 'duplicate_id'))
                 continue
+            if rule.cell_key not in known_cells:
+                # A global ceiling on distinct cells: upstream load scales
+                # with cells, not users (design §2).
+                if free_cells <= 0:
+                    rejected.append((rule.id, 'capacity'))
+                    continue
+                free_cells -= 1
+                known_cells.add(rule.cell_key)
             accepted.append(rule.id)
             # A once-window that is over is accepted and dropped (§6).
             if not rulemod.is_expired(rule.window, now):
@@ -160,7 +187,7 @@ async def register(conn, device, bearer, now):
                 'VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
                 rule.cell_key, lat, lon)
             previous = await conn.fetchrow(
-                'SELECT kind, cell_key, params FROM push.rules WHERE id = $1',
+                'SELECT kind, params FROM push.rules WHERE id = $1',
                 rule.id)
             await conn.execute(
                 """
@@ -180,10 +207,11 @@ async def register(conn, device, bearer, now):
                 rule.id, device['deviceId'], rule.kind, rule.cell_key,
                 rule.raw_params, rule.schedule, rule.live, position)
             # An edited rule is a new rule: it re-arms (rules design §3).
+            # A new cell is not an edit — rules at „Mein Standort" move with
+            # the phone and must not report again in every cell.
             if previous is not None and (
-                    previous['kind'], previous['cell_key'],
-                    _semantic(previous['params'])) != (
-                    rule.kind, rule.cell_key, _semantic(rule.raw_params)):
+                    previous['kind'], _semantic(previous['params'])) != (
+                    rule.kind, _semantic(rule.raw_params)):
                 await conn.execute(
                     'DELETE FROM push.rule_state WHERE rule_id = $1',
                     rule.id)
@@ -206,6 +234,13 @@ async def delete_device(conn, device_id):
 
 
 async def report_activity_token(conn, device_id, activity_id, token, now):
+    """The app reports an activity's push token, and again on rotation.
+
+    A server-started activity has no id until this report, so the first
+    report names it. A report for another id replaces the row only when no
+    activity is running — a late token from an older activity must not
+    take over a newer one.
+    """
     await conn.execute(
         """
         INSERT INTO push.live_activities (
@@ -214,23 +249,27 @@ async def report_activity_token(conn, device_id, activity_id, token, now):
         VALUES ($1, $2, 'app', $3, $4, '{}'::jsonb)
         ON CONFLICT (device_id) DO UPDATE SET
           activity_id = excluded.activity_id,
-          activity_token = excluded.activity_token,
-          ended_at = NULL
+          activity_token = excluded.activity_token
+        WHERE push.live_activities.activity_id IS NULL
+           OR push.live_activities.activity_id = excluded.activity_id
+           OR push.live_activities.ended_at IS NOT NULL
         """,
         device_id, activity_id, token, now)
 
 
 async def end_activity(conn, device_id, activity_id, now, cooldown):
     """The user dismissed the activity: stop updating it, start the
-    cooldown. An `activityId` for an older activity changes nothing."""
+    cooldown, and remember it so the same event does not come back unless
+    it escalates. Only the named activity — a late DELETE for an older one
+    must not end a newer one."""
     await conn.execute(
         """
         UPDATE push.live_activities SET
           activity_token = NULL,
           ended_at = $3,
-          cooldown_until = $4
-        WHERE device_id = $1
-          AND (activity_id IS NULL OR activity_id = $2)
+          cooldown_until = $4,
+          state = state || '{"dismissed": true}'::jsonb
+        WHERE device_id = $1 AND activity_id = $2 AND ended_at IS NULL
         """,
         device_id, activity_id, now, now + cooldown)
 
@@ -252,4 +291,4 @@ async def mark_source(conn, source, now, error=None):
             VALUES ($1, $2, $3)
             ON CONFLICT (source) DO UPDATE SET
               last_attempt = $2, last_error = $3
-            """, source, now, error[:500])
+            """, source, now, re.sub(r'https?://\S+', '<url>', error)[:500])

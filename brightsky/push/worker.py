@@ -21,6 +21,7 @@ logger = logging.getLogger('brightsky.push.worker')
 CELL_RESOLVE_RETRY = datetime.timedelta(days=1)
 FORECAST_CONCURRENCY = 4
 AUDIT_RETENTION = datetime.timedelta(days=30)
+DEVICE_RETENTION = datetime.timedelta(days=90)
 
 
 def utcnow():
@@ -103,6 +104,25 @@ RUNNING_SQL = """
 """
 
 
+class isolated:
+    """One rule, cell or device failing — a bad stored rule, a forecast
+    that times out — is logged and skipped; it must not stop the loop for
+    everyone else (review #6)."""
+
+    def __init__(self, what, key):
+        self.what, self.key = what, key
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None or not issubclass(exc_type, Exception):
+            return False
+        logger.error('Skipping %s %s: %r', self.what, self.key, exc,
+                     exc_info=(exc_type, exc, tb))
+        return True
+
+
 def drop_carried(decided, carried):
     """A live event the activity carries needs no notification: the
     start or update push is the notification."""
@@ -165,19 +185,20 @@ class Worker:
             decided = []
             candidates = {}
             for row in rows:
-                rule = rule_from_row(row)
-                hours = []
-                if rule.values:
-                    hours = await self.hours_for(row, now)
-                matches = ev.warning_matches(
-                    rule, obs.lookup(row['warn_cell_id']), hours, now)
-                decision = firing.decide_warnings(
-                    rule, matches, states.get(rule.id, {}), now)
-                decided.append((rule, row, decision))
-                if row['live'] is not None:
-                    self.warning_candidates(
-                        candidates, rule, row, matches,
-                        states.get(rule.id, {}), decision, now)
+                with isolated('warning rule', row['id']):
+                    rule = rule_from_row(row)
+                    hours = []
+                    if rule.values:
+                        hours = await self.hours_for(row, now)
+                    matches = ev.warning_matches(
+                        rule, obs.lookup(row['warn_cell_id']), hours, now)
+                    decision = firing.decide_warnings(
+                        rule, matches, states.get(rule.id, {}), now)
+                    decided.append((rule, row, decision))
+                    if row['live'] is not None:
+                        self.warning_candidates(
+                            candidates, rule, row, matches,
+                            states.get(rule.id, {}), decision, now)
             carried = await self.live_warnings(conn, candidates, obs, now)
             drop_carried(decided, carried)
             await dispatch_all(conn, self.client, decided, now)
@@ -212,19 +233,21 @@ class Worker:
                    for r in await conn.fetch(RUNNING_SQL, 'warning')}
         carried = set()
         for device_id in set(candidates) | set(running):
-            row, cands = candidates.get(device_id, (None, []))
-            device = device_of(row or running[device_id])
-            winner = live.winner(cands, now)
-            present = True
-            if device_id in running:
-                r = running[device_id]
-                family = r['state'].get('family')
-                present = any(
-                    w.family == family and w.end > now
-                    for w in obs.lookup(r['warn_cell_id']))
-            if await livectl.warning_tick(conn, self.client, device, winner,
-                                          present, now) and winner:
-                carried.add((device_id, f'dwd:{winner.warning.id}'))
+            with isolated('live warning for device', device_id):
+                row, cands = candidates.get(device_id, (None, []))
+                device = device_of(row or running[device_id])
+                winner = live.winner(cands, now)
+                present = True
+                if device_id in running:
+                    r = running[device_id]
+                    family = r['state'].get('family')
+                    present = any(
+                        w.family == family and w.end > now
+                        for w in obs.lookup(r['warn_cell_id']))
+                if await livectl.warning_tick(
+                        conn, self.client, device, winner, present,
+                        now) and winner:
+                    carried.add((device_id, f'dwd:{winner.warning.id}'))
         return carried
 
     # MARK: forecast
@@ -255,20 +278,22 @@ class Worker:
                     logger.warning('Forecast for %s failed: %r',
                                    row['cell_key'], e)
         await asyncio.gather(*(fetch(r) for r in cells.values()))
+        self.forecast.evict(set(cells), now)
         async with self.pool.acquire() as conn:
             states = await load_states(conn, [r['id'] for r in rows])
             decided = []
             for row in rows:
                 if row['cell_key'] in failed:
                     continue
-                rule = rule_from_row(row)
-                if rulemod.is_expired(rule.window, now):
-                    continue
-                matches = ev.value_matches(
-                    rule, self.forecast.lookup(row['cell_key']), now)
-                decision = firing.decide_values(
-                    rule, matches, states.get(rule.id, {}), now)
-                decided.append((rule, row, decision))
+                with isolated('forecast rule', row['id']):
+                    rule = rule_from_row(row)
+                    if rulemod.is_expired(rule.window, now):
+                        continue
+                    matches = ev.value_matches(
+                        rule, self.forecast.lookup(row['cell_key']), now)
+                    decision = firing.decide_values(
+                        rule, matches, states.get(rule.id, {}), now)
+                    decided.append((rule, row, decision))
             await dispatch_all(conn, self.client, decided, now)
             if cells and len(failed) == len(cells):
                 raise RuntimeError('every forecast lookup failed')
@@ -305,37 +330,54 @@ class Worker:
             candidates = {}
             for row in rows:
                 if row['cell_key'] not in points:
-                    continue
-                rule = rule_from_row(row)
-                device_id = str(row['d_id'])
-                rain = live.analyze_rain(points[row['cell_key']], now,
-                                         in_phase=device_id in running)
-                hours = (await self.hours_for(row, now)
-                         if rule.values else [])
-                match = ev.rain_match(rule, rain, hours, now)
-                decision = firing.decide_rain(
-                    rule, match, states.get(rule.id, {}), now)
-                decided.append((rule, row, decision))
-                if row['live'] is not None and rain is not None:
-                    candidates.setdefault(device_id, (row, []))
-                    soon = rain.state == 'raining' or (
-                        rain.first_rain_at is not None
-                        and rain.first_rain_at <= now + live.START_WITHIN)
-                    gated = rule.values and match is None
-                    if soon and not gated:
-                        candidates[device_id][1].append(live.Candidate(
-                            'rain', rule.id, rain.first_rain_at or now,
-                            rain=rain, context=match and match.context))
+                    continue   # no data: neither fire nor re-arm
+                with isolated('rain rule', row['id']):
+                    rule = rule_from_row(row)
+                    device_id = str(row['d_id'])
+                    rain = live.analyze_rain(points[row['cell_key']], now,
+                                             in_phase=device_id in running)
+                    if rain is None:
+                        continue
+                    hours = (await self.hours_for(row, now)
+                             if rule.values else [])
+                    match = ev.rain_match(rule, rain, hours, now)
+                    clear = (rain.first_rain_at is None
+                             and rain.state != 'raining')
+                    decision = firing.decide_rain(
+                        rule, match, states.get(rule.id, {}), now, clear)
+                    decided.append((rule, row, decision))
+                    if row['live'] is not None:
+                        candidates.setdefault(device_id, (row, []))
+                        soon = rain.state == 'raining' or (
+                            rain.first_rain_at is not None
+                            and rain.first_rain_at
+                            <= now + live.START_WITHIN)
+                        # the activity starts only where a match exists
+                        if soon and match is not None:
+                            candidates[device_id][1].append(live.Candidate(
+                                'rain', rule.id, rain.first_rain_at or now,
+                                rain=rain, context=match.context,
+                                cell_key=rule.cell_key))
             carried = set()
             for device_id in set(candidates) | set(running):
-                row, cands = candidates.get(device_id, (None, []))
-                device = device_of(row or running[device_id])
-                winner = live.winner(cands, now)
-                if await livectl.rain_tick(conn, self.client, device,
-                                           winner, now):
-                    for rule, r, _ in decided:
-                        if str(r['d_id']) == device_id and r['live']:
-                            carried.add((device_id, f'rain:{rule.id}'))
+                with isolated('live rain for device', device_id):
+                    row, cands = candidates.get(device_id, (None, []))
+                    device = device_of(row or running[device_id])
+                    winner = live.winner(cands, now)
+                    # A running activity is judged at its own rule's cell,
+                    # over the whole 2 h: a gap before the next shower does
+                    # not end it; no data leaves it alone.
+                    current = None
+                    r = running.get(device_id)
+                    if r is not None and r['cell_key'] in points:
+                        current = live.analyze_rain(
+                            points[r['cell_key']], now, in_phase=True)
+                    if await livectl.rain_tick(conn, self.client, device,
+                                               winner, current,
+                                               now) and winner:
+                        # only the winner rides on the activity (§19);
+                        # other places notify as usual
+                        carried.add((device_id, f'rain:{winner.cell_key}'))
             drop_carried(decided, carried)
             await dispatch_all(conn, self.client, decided, now)
             await store.mark_source(conn, 'nowcast', now)
@@ -357,38 +399,54 @@ class Worker:
             rows = await conn.fetch(DIGEST_SQL)
             obs = None
             if any(r['kind'] == 'dwd_warning' for r in rows):
-                obs = await self.warnings.refresh(conn, now)
+                try:
+                    obs = await self.warnings.refresh(conn, now)
+                except sources.Stale:
+                    if local.hour < DIGEST_HOURS[-1]:
+                        raise   # retry every minute for a while …
+                    # … then send the rest without the warning rules
+                    logger.warning('Digest: warnings stale, sending '
+                                   'without warning rules')
             states = await load_states(conn, [r['id'] for r in rows])
             decided = []
             for row in rows:
-                rule = rule_from_row(row)
-                if rulemod.is_expired(rule.window, now):
-                    continue
-                prior = states.get(rule.id, {})
-                hours = (await self.hours_for(row, now)
-                         if rule.values else [])
-                if rule.kind == 'user_rule':
-                    decision = firing.decide_values(
-                        rule, ev.value_matches(rule, hours, now), prior, now)
-                elif rule.kind == 'dwd_warning':
-                    matches = ev.warning_matches(
-                        rule, obs.lookup(row['warn_cell_id']), hours, now)
-                    decision = firing.decide_warnings(rule, matches, prior,
-                                                      now)
-                else:
-                    rain = live.analyze_rain(await self.nowcast.fetch(
-                        row['lat'], row['lon'], now), now)
-                    decision = firing.decide_rain(
-                        rule, ev.rain_match(rule, rain, hours, now), prior,
-                        now)
-                decided.append((rule, row, decision))
+                with isolated('digest rule', row['id']):
+                    rule = rule_from_row(row)
+                    if rulemod.is_expired(rule.window, now):
+                        continue
+                    if rule.kind == 'dwd_warning' and obs is None:
+                        continue
+                    prior = states.get(rule.id, {})
+                    hours = (await self.hours_for(row, now)
+                             if rule.values else [])
+                    if rule.kind == 'user_rule':
+                        decision = firing.decide_values(
+                            rule, ev.value_matches(rule, hours, now), prior,
+                            now)
+                    elif rule.kind == 'dwd_warning':
+                        matches = ev.warning_matches(
+                            rule, obs.lookup(row['warn_cell_id']), hours,
+                            now)
+                        decision = firing.decide_warnings(rule, matches,
+                                                          prior, now)
+                    else:
+                        rain = live.analyze_rain(await self.nowcast.fetch(
+                            row['lat'], row['lon'], now), now)
+                        clear = rain is None or (
+                            rain.first_rain_at is None
+                            and rain.state != 'raining')
+                        decision = firing.decide_rain(
+                            rule, ev.rain_match(rule, rain, hours, now),
+                            prior, now, clear)
+                    decided.append((rule, row, decision))
             by_device = {}
             for rule, row, decision in decided:
                 by_device.setdefault(str(row['d_id']), (row, []))[1].append(
                     (rule, row, decision))
             for row, items in by_device.values():
-                await dispatcher.apply(conn, self.client, device_of(row),
-                                       items, now, digest_date=today)
+                with isolated('digest for device', row['d_id']):
+                    await dispatcher.apply(conn, self.client, device_of(row),
+                                           items, now, digest_date=today)
             await store.mark_source(conn, 'digest', now)
         return len(rows)
 
@@ -401,6 +459,11 @@ class Worker:
             await conn.execute(
                 'DELETE FROM push.notifications_sent WHERE sent_at < $1',
                 now - AUDIT_RETENTION)
+            # The app re-registers on every launch; a device silent for
+            # 90 days is gone (review #20). Rules and state cascade.
+            await conn.execute(
+                'DELETE FROM push.devices WHERE last_seen < $1',
+                now - DEVICE_RETENTION)
             # Cells no rule refers to any more
             await conn.execute(
                 'DELETE FROM push.cells c WHERE NOT EXISTS ('
@@ -423,7 +486,8 @@ class Worker:
                            exc_info=level == logging.ERROR)
                 try:
                     async with self.pool.acquire() as conn:
-                        await store.mark_source(conn, name, started, repr(e))
+                        await store.mark_source(
+                            conn, name, started, f'{type(e).__name__}: {e}')
                 except Exception:
                     logger.exception('Could not record %s failure', name)
             elapsed = (utcnow() - started).total_seconds()

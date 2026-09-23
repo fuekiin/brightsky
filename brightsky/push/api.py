@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import ORJSONResponse, Response
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 import brightsky
 from brightsky.push import store
@@ -43,6 +43,49 @@ async def lifespan(app):
         del ctx['pool']
 
 
+MAX_BODY = 256 * 1024
+
+
+class BodyLimit:
+    """413 for bodies over MAX_BODY, counted while reading, so a
+    chunked body without Content-Length cannot get around it."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] != 'http':
+            return await self.app(scope, receive, send)
+        length = dict(scope['headers']).get(b'content-length')
+        if length is not None and int(length) > MAX_BODY:
+            return await _too_large(send)
+        seen = 0
+
+        async def limited():
+            nonlocal seen
+            message = await receive()
+            if message['type'] == 'http.request':
+                seen += len(message.get('body', b''))
+                if seen > MAX_BODY:
+                    raise _TooLarge()
+            return message
+        try:
+            await self.app(scope, limited, send)
+        except _TooLarge:
+            await _too_large(send)
+
+
+class _TooLarge(Exception):
+    pass
+
+
+async def _too_large(send):
+    await send({'type': 'http.response.start', 'status': 413,
+                'headers': [(b'content-type', b'application/json')]})
+    await send({'type': 'http.response.body',
+                'body': b'{"detail":"body too large"}'})
+
+
 app = FastAPI(
     lifespan=lifespan,
     title='nano push',
@@ -52,6 +95,7 @@ app = FastAPI(
     openapi_url=None,
     default_response_class=ORJSONResponse,
 )
+app.add_middleware(BodyLimit)
 
 
 class DeviceIn(BaseModel):
@@ -60,11 +104,12 @@ class DeviceIn(BaseModel):
     pushToStartToken: str | None = None
     liveActivitiesEnabled: bool = True
     environment: Literal['sandbox', 'production']
-    appVersion: str | None = None
-    tier: str = 'free'
+    appVersion: str | None = Field(default=None, max_length=32)
+    tier: str = Field(default='free', max_length=16)
     # Validated one by one in store.register, so one bad rule never
-    # rejects the device.
-    rules: list[Any] = []
+    # rejects the device. The per-device ceiling (50) rejects rules; this
+    # bound only keeps a hostile body from being parsed at all.
+    rules: list[Any] = Field(default=[], max_length=200)
 
     @field_validator('apnsToken', 'pushToStartToken')
     @classmethod
@@ -78,7 +123,7 @@ class DeviceIn(BaseModel):
 
 
 class ActivityTokenIn(BaseModel):
-    activityId: str
+    activityId: str = Field(max_length=128)
     pushToken: str
 
     @field_validator('pushToken')
@@ -91,7 +136,7 @@ class ActivityTokenIn(BaseModel):
 
 
 class ActivityEndIn(BaseModel):
-    activityId: str
+    activityId: str = Field(max_length=128)
 
 
 def bearer(authorization):
@@ -145,14 +190,18 @@ async def register(
         device: DeviceIn, request: Request,
         authorization: str | None = Header(default=None)):
     secret = bearer(authorization)
-    if secret is None:
-        ip = request.client.host if request.client else 'unknown'
-        if not rate_limiter.allow(ip, settings.PUSH_REGISTER_RATE_LIMIT):
-            logger.warning('Registration rate limit tripped for %s', ip)
-            raise HTTPException(429, 'too many registrations')
     payload = device.model_dump()
     payload['deviceId'] = str(device.deviceId)
     async with ctx['pool'].acquire() as conn:
+        # Every request that can create a device — a fresh registration,
+        # a takeover, or adopting an unknown id with a bearer — counts
+        # against the client's hourly allowance (review #5).
+        if secret is None or not await store.device_exists(
+                conn, payload['deviceId']):
+            ip = request.client.host if request.client else 'unknown'
+            if not rate_limiter.allow(ip, settings.PUSH_REGISTER_RATE_LIMIT):
+                logger.warning('Registration rate limit tripped for %s', ip)
+                raise HTTPException(429, 'too many registrations')
         try:
             accepted, rejected, new_secret, event = await store.register(
                 conn, payload, secret, utcnow())
@@ -221,13 +270,21 @@ async def catalog():
 HEALTH_SOURCES = ('warnings', 'forecast', 'nowcast', 'digest', 'apns')
 
 
+def _error_summary(error):
+    """Class and message only — no URLs, hosts or query strings (a
+    forecast URL names a cell)."""
+    if not error:
+        return None
+    return re.sub(r'https?://\S+', '<url>', error)[:200]
+
+
 @app.get('/health')
 async def health():
     now = utcnow()
     try:
         async with ctx['pool'].acquire() as conn:
             rows = await conn.fetch('SELECT * FROM push.source_status')
-            devices = await conn.fetchval('SELECT count(*) FROM push.devices')
+            cells = await conn.fetchval('SELECT count(*) FROM push.cells')
     except Exception:
         logger.exception('Health check: database unreachable')
         return ORJSONResponse(
@@ -240,12 +297,15 @@ async def health():
         sources[name] = {
             'lastSuccessAgeSeconds': (
                 round((now - last).total_seconds()) if last else None),
-            'lastError': r and r['last_error'],
+            'lastError': _error_summary(r and r['last_error']),
         }
+    warnings = []
+    if cells >= 0.8 * settings.PUSH_MAX_CELLS:
+        warnings.append('cells_near_capacity')
     return {
         'status': 'ok',
         'version': brightsky.__version__,
         'database': True,
-        'devices': devices,
         'sources': sources,
+        'warnings': warnings,
     }

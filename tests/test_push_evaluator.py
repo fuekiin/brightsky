@@ -270,3 +270,52 @@ def test_heat_index():
 def test_in_between_is_the_air_temperature():
     assert ev.apparent_temperature(18, 30, 90) == 18
     assert ev.apparent_temperature(-3, None, None) == -3
+
+
+# MARK: - app 04b7648
+
+def test_a_week_of_workdays_held_together_is_one_occasion():
+    frost = preset('frost', window={
+        'days': 'weekdays', 'weekdays': [1, 2, 3, 4, 5],
+        'notice': 'sameDay', 'together': True, 'part': 'morning'})
+    keys = set()
+    for day in range(21, 26):   # Mon 21 … Fri 25 September 2026, 07:30
+        at = b(2026, 9, day, 7, 30)
+        cold = [hour(b(2026, 9, day, h), temp=-3) for h in range(8, 12)]
+        m = ev.value_matches(frost, cold, at)
+        if m:
+            keys.add(m[0].occurrence_key)
+    assert keys == {'2026-09-21'}
+
+
+def test_a_weekend_night_stays_saturdays_occasion_on_monday_morning():
+    frost = preset('frost', window={
+        'days': 'weekdays', 'weekdays': [6, 7], 'notice': 'dayBefore',
+        'together': True, 'part': 'night'})
+    cold = [hour(b(2026, 9, 28, h), temp=-2) for h in range(1, 6)]
+    [m] = ev.value_matches(frost, cold, b(2026, 9, 28, 1))
+    assert m.occurrence_key == '2026-09-26'
+
+
+def test_all_seven_days_together_count_day_by_day():
+    r = preset('frost', window={
+        'days': 'weekdays', 'weekdays': list(range(1, 8)),
+        'notice': 'sameDay', 'together': True, 'part': 'allDay'})
+    occs = ev.occurrences(r.window, NOW)
+    assert all(len(o.spans) == 1 for o in occs)
+
+
+def test_one_noisy_step_is_not_rain():
+    """RuleEvaluatorTests.testOneNoisyStepIsNotRain"""
+    from brightsky.push import live
+    regen = preset('regen')
+    m5 = datetime.timedelta(minutes=5)
+
+    def points(wet):
+        return [live.Point(NOW + i * m5, 0.2 if i in wet else 0)
+                for i in range(24)]
+    assert ev.rain_match(regen, live.analyze_rain(points({4, 9}), NOW), [],
+                         NOW) is None
+    m = ev.rain_match(regen, live.analyze_rain(points({4, 9, 10}), NOW), [],
+                      NOW)
+    assert m.starts_in_minutes == 45

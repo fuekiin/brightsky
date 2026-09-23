@@ -275,7 +275,10 @@ class Occurrence:
 def _occasions(window, dates):
     if window.days == 'once':
         return [list(dates)] if dates else []
-    if window.days == 'weekdays' and window.together:
+    # All seven days held together would be one endless occasion: they
+    # count day by day (app 04b7648).
+    if (window.days == 'weekdays' and window.together
+            and len(window.weekdays) < 7):
         out = []
         for d in sorted(dates):
             if out and out[-1][-1] + datetime.timedelta(days=1) == d:
@@ -298,9 +301,11 @@ def occurrences(window, now):
     elif window.days == 'tomorrow':
         dates = [today + day]
     elif window.days == 'weekdays':
-        # From yesterday: a weekend already under way keeps its Saturday
-        # as its key.
-        dates = [today + k * day for k in range(-1, 9)
+        # Looking back far enough that a run already under way keeps its
+        # true first day as its key — a week of workdays held together is
+        # one occasion, not four (app 04b7648).
+        lookback = 7 if window.together else 1
+        dates = [today + k * day for k in range(-lookback, 9)
                  if berlin.weekday(today + k * day) in window.weekdays]
     elif window.days == 'once':
         dates = list(window.dates)

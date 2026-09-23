@@ -119,6 +119,15 @@ class ForecastSource:
     def lookup(self, cell_key):
         return self.hours.get(cell_key)
 
+    def evict(self, keep, now):
+        """Forget cells no rule uses any more (review #20); a cell that
+        warnings or the digest still read is fetched again on demand."""
+        for cell_key in list(self.hours):
+            if cell_key not in keep and now - self.fetched_at[cell_key] \
+                    > datetime.timedelta(hours=1):
+                del self.hours[cell_key]
+                del self.fetched_at[cell_key]
+
 
 class NowcastSource:
     """The radar point nowcast per cell, as the app reads it: `/radar` at

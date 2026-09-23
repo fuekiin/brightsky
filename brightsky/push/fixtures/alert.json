@@ -1,0 +1,28 @@
+{
+  "aps": {
+    "alert": {
+      "title": "Temperaturgrenze erreicht",
+      "body": "Die Temperatur sinkt voraussichtlich auf −2 °C."
+    },
+    "sound": "default",
+    "mutable-content": 1,
+    "thread-id": "6f96a1c2-0000-4000-8000-000000000001"
+  },
+  "nano": {
+    "v": 1,
+    "kind": "user_rule",
+    "ruleId": "6f96a1c2-0000-4000-8000-000000000001",
+    "ruleIds": [
+      "6f96a1c2-0000-4000-8000-000000000001"
+    ],
+    "cellKey": "53.55,10.01",
+    "occurrence": "rule:6f96a1c2-0000-4000-8000-000000000001:2026-09-23",
+    "evidence": {
+      "values": {
+        "temp": -2.0
+      },
+      "day": "morgen",
+      "time": "gegen 5 Uhr"
+    }
+  }
+}

@@ -35,14 +35,18 @@ Never in a repository. One key serves both APNs environments and does not expire
 
 ## 2. Env
 
-`~/brightsky/.env` (from `server/env.example`) gains:
+`~/brightsky/.env` (from `server/env.example`) gains `HOSTNAME_PUSH=push.nano-wetter.de` and the
+new `BRIGHTSKY_IMAGE_TAG=sha-<commit>` from step 0.
+
+A new `~/brightsky/push.env`, mode 600, holds the APNs settings, so no key material or IDs sit
+in the compose file:
 
 ```
-HOSTNAME_PUSH=push.nano-wetter.de
-APNS_TEAM_ID=<TEAM_ID from team.env>
+BRIGHTSKY_PUSH_APNS_KEY_PATH=/run/secrets/apns.p8
+BRIGHTSKY_PUSH_APNS_KEY_ID=8GS8RHYV67
+BRIGHTSKY_PUSH_APNS_TEAM_ID=<TEAM_ID from team.env>
+BRIGHTSKY_PUSH_WEATHER_URL=http://web:5000
 ```
-
-and `BRIGHTSKY_IMAGE_TAG=sha-<commit>` from step 0.
 
 ## 3. Compose overlay
 
@@ -52,7 +56,7 @@ file, so this cannot be a separate overlay file):
 ```yaml
   push-api:
     <<: *brightsky
-    command: push-serve --bind 0.0.0.0:5001 --forwarded-allow-ips '*'
+    command: push-serve --bind 0.0.0.0:5001 --forwarded-allow-ips <compose network CIDR>
     restart: always
     mem_limit: 256m
     labels:
@@ -63,28 +67,26 @@ file, so this cannot be a separate overlay file):
       - traefik.http.services.push.loadbalancer.server.port=5001
   push-work:
     <<: *brightsky
-    command: --migrate push-work
+    command: push-work
     restart: always
     mem_limit: 512m
-    environment:
-      # a service-level list replaces the anchor's — repeat its two entries
-      - BRIGHTSKY_DATABASE_URL=postgres://postgres:pgpass@postgres
-      - BRIGHTSKY_REDIS_URL=redis://redis
-      - BRIGHTSKY_PUSH_APNS_KEY_PATH=/run/secrets/apns.p8
-      - BRIGHTSKY_PUSH_APNS_KEY_ID=8GS8RHYV67
-      - BRIGHTSKY_PUSH_APNS_TEAM_ID=${APNS_TEAM_ID}
-      - BRIGHTSKY_PUSH_WEATHER_URL=http://web:5000
+    env_file:
+      - brightsky.env
+      - push.env
     volumes:
       - .data/brightsky:/app/.cache
       - /home/ubuntu/secrets/AuthKey_8GS8RHYV67.p8:/run/secrets/apns.p8:ro
 ```
 
 Notes:
+- `--forwarded-allow-ips`: only Traefik may set `X-Forwarded-For`, or anyone could pick the IP
+  the registration rate limit counts. Take the stack network's subnet from
+  `docker network inspect brightsky_default -f '{{(index .IPAM.Config 0).Subnet}}'`.
+  `push-api` publishes no port, so every request comes through Traefik.
+- `env_file` on a service replaces the anchor's `env_file`, so `brightsky.env` is listed again.
+  The anchor's `environment` list (database and Redis URLs) still applies.
 - The router labels follow the grafana router in `analytics.yml` (`websecure`, `letsencrypt`).
   Check the `web` router in the upstream `traefik.yml` uses the same names.
-- `--forwarded-allow-ips '*'` is safe only because `push-api` publishes no port: every request
-  comes through Traefik, whose `X-Forwarded-For` gives the registration rate limit the real
-  client IP.
 - `push-work` reads forecasts and the radar from `web` over the compose network (design §3),
   never through Traefik, so its load does not show on the public routers. It is roughly one
   request per distinct rule cell every 5–15 min.
@@ -94,18 +96,22 @@ Notes:
   that has not been measured. Watch `docker stats` after the first registrations and raise the
   limit if it gets close.
 
-## 4. Start
+## 4. Migrate, then start
+
+`push-work` does not migrate. Migration 0022 is applied by the `worker` container
+(`--migrate work`), or explicitly first:
 
 ```bash
 cd ~/brightsky
-docker compose -f brightsky.yml -f traefik.yml -f analytics.yml pull push-api push-work
-docker compose -f brightsky.yml -f traefik.yml -f analytics.yml up -d push-work   # migrates 0022
-docker compose -f brightsky.yml -f traefik.yml -f analytics.yml up -d push-api
+C="docker compose -f brightsky.yml -f traefik.yml -f analytics.yml"
+$C pull
+$C run --rm brightsky migrate      # applies 0022_push.sql; safe to run twice
+$C up -d worker web radar3d        # the new image tag recreates them anyway
+$C up -d push-work push-api
 ```
 
-`web`, `worker` and `radar3d` are not recreated as long as their definitions are unchanged. If
-the image tag moved, `up -d` recreates them too; that is the normal redeploy
-(`docs/runbook-redeploy.md`).
+Concurrent `--migrate` containers are safe since this release: `migrate()` holds a Postgres
+advisory lock.
 
 ## 5. Verify
 

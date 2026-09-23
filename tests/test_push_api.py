@@ -94,11 +94,66 @@ def test_wrong_secret_is_401_and_retry_takes_over(push):
 
 def test_unknown_device_with_secret_is_adopted(push):
     d = device()
-    resp = push.post('/v1/devices', json=d, headers=auth('kept-secret'))
+    kept = 'k' * 43   # what this server issues: token_urlsafe(32)
+    resp = push.post('/v1/devices', json=d, headers=auth(kept))
     assert resp.status_code == 200
     assert 'deviceSecret' not in resp.json()
     assert push.post('/v1/devices', json=d,
-                     headers=auth('kept-secret')).status_code == 200
+                     headers=auth(kept)).status_code == 200
+
+
+def test_short_secret_cannot_adopt(push):
+    """Review #5: adopting needs a secret this server could have issued."""
+    assert push.post('/v1/devices', json=device(),
+                     headers=auth('short')).status_code == 401
+
+
+def test_adopting_counts_against_the_rate_limit(push, monkeypatch):
+    from brightsky.settings import settings
+    monkeypatch.setitem(settings, 'PUSH_REGISTER_RATE_LIMIT', 2)
+    codes = [push.post('/v1/devices', json=device(),
+                       headers=auth('k' * 43)).status_code
+             for _ in range(3)]
+    assert codes == [200, 200, 429]
+
+
+def test_known_device_with_secret_is_not_rate_limited(push, monkeypatch):
+    from brightsky.settings import settings
+    d = device()
+    secret = push.post('/v1/devices', json=d).json()['deviceSecret']
+    monkeypatch.setitem(settings, 'PUSH_REGISTER_RATE_LIMIT', 1)
+    for _ in range(3):
+        assert push.post('/v1/devices', json=d,
+                         headers=auth(secret)).status_code == 200
+
+
+def test_cells_outside_germany_are_rejected(push):
+    r = rule(cellKey='48.86,2.35')   # Paris
+    body = push.post('/v1/devices', json=device([r])).json()
+    assert body['rejected'] == [{'ruleId': r['id'].lower(),
+                                 'reason': 'outside_coverage'}]
+
+
+def test_global_cell_cap(push, monkeypatch):
+    from brightsky.settings import settings
+    monkeypatch.setitem(settings, 'PUSH_MAX_CELLS', 1)
+    a, b, c = rule(), rule(cellKey='52.52,13.41'), rule()
+    body = push.post('/v1/devices', json=device([a, b, c])).json()
+    # the first cell fits, the second does not; the third rule shares the
+    # first cell and costs nothing
+    assert body['accepted'] == [a['id'].lower(), c['id'].lower()]
+    assert body['rejected'] == [{'ruleId': b['id'].lower(),
+                                 'reason': 'capacity'}]
+
+
+def test_body_and_field_limits(push):
+    assert push.post('/v1/devices', json=device(
+        rules=[rule() for _ in range(201)])).status_code == 422
+    assert push.post('/v1/devices', json=device(
+        appVersion='x' * 33)).status_code == 422
+    big = device()
+    big['padding'] = 'x' * (300 * 1024)
+    assert push.post('/v1/devices', json=big).status_code == 413
 
 
 @pytest.mark.parametrize('overrides, reason', [
@@ -341,3 +396,17 @@ def test_catalog_templates_are_rules_the_server_accepts():
             families = c.get('officialWarning', {}).get('families', [])
             assert set(families) <= set(rulemod.FAMILIES)
         rulemod.parse_rule(_wire(t))   # raises Rejected with the reason
+
+
+def test_moving_cell_keeps_state(push, db):
+    """Rules at „Mein Standort" re-register on every cell change; that
+    must not re-arm them (review #1)."""
+    r = rule()
+    d = device([r])
+    secret = push.post('/v1/devices', json=d).json()['deviceSecret']
+    db.insert('push.rule_state', [{
+        'rule_id': r['id'].lower(), 'occurrence_key': 'k', 'state': '{}'}])
+    r['cellKey'] = '53.59,10.07'
+    push.post('/v1/devices', json=d, headers=auth(secret))
+    assert len(db.fetch('SELECT * FROM push.rule_state')) == 1
+    assert db.fetch('SELECT cell_key FROM push.rules')[0][0] == '53.59,10.07'

@@ -34,6 +34,8 @@ NEXT_HOURS_RANGE = range(1, 49)
 NEXT_DAYS_RANGE = range(2, 8)
 DIGEST_SCHEDULE = {'at': '07:00', 'tz': 'Europe/Berlin'}
 
+COVERAGE_LAT = (47.0, 55.5)
+COVERAGE_LON = (5.5, 15.5)
 CELL_KEY_RE = re.compile(r'^-?\d{1,2}\.\d{2},-?\d{1,3}\.\d{2}$')
 
 
@@ -118,6 +120,11 @@ def parse_cell_key(cell_key):
     lat, lon = (float(x) for x in cell_key.split(','))
     if not (-90 <= lat <= 90 and -180 <= lon <= 180):
         raise Rejected('bad_cell_key')
+    # The app's LocationPolicy box: DWD data covers Germany, and every
+    # cell costs a forecast and a radar lookup per cycle.
+    if not (COVERAGE_LAT[0] <= lat <= COVERAGE_LAT[1]
+            and COVERAGE_LON[0] <= lon <= COVERAGE_LON[1]):
+        raise Rejected('outside_coverage')
     return lat, lon
 
 

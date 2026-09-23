@@ -4,6 +4,7 @@ One `.p8` key serves both environments. Device tokens are not portable
 between them, so every send names the environment the device reported.
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -97,14 +98,19 @@ class Result:
 
     @property
     def retryable(self):
-        return self.status in (429, 500, 503) or self.status == 0
+        return self.status in (0, 429, 500, 502, 503, 504)
 
 
 class APNsClient:
 
+    # Concurrent streams per process; APNs allows far more, but a burst of
+    # thousands at 07:00 must not open thousands at once.
+    MAX_CONCURRENT = 50
+
     def __init__(self, provider_token, topic, transport=None, timeout=15):
         self.provider_token = provider_token
         self.topic = topic
+        self._semaphore = asyncio.Semaphore(self.MAX_CONCURRENT)
         self._clients = {}
         self._transport = transport
         self._timeout = timeout
@@ -147,9 +153,10 @@ class APNsClient:
         for attempt in (1, 2):
             headers['authorization'] = f'bearer {self.provider_token.get()}'
             try:
-                resp = await self._client(environment).post(
-                    f'/3/device/{device_token}', content=body,
-                    headers=headers)
+                async with self._semaphore:
+                    resp = await self._client(environment).post(
+                        f'/3/device/{device_token}', content=body,
+                        headers=headers)
             except httpx.HTTPError as e:
                 logger.warning('APNs %s unreachable: %r', environment, e)
                 return Result(0, type(e).__name__)

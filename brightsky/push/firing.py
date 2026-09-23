@@ -115,18 +115,23 @@ def decide_warnings(rule, matches, states, now):
     return d
 
 
-def decide_rain(rule, match, states, now):
-    """One notification per rain event; re-arms when the nowcast clears
-    (design §4.2) — event-level hysteresis, so a five-minute poll never
-    reports the same shower twice."""
+def decide_rain(rule, match, states, now, clear):
+    """One notification per rain event (design §4.2).
+
+    Re-arms only when the nowcast shows no real rain at all (`clear`) — not
+    whenever the rule's horizon misses the shower by five minutes, which
+    would report the same shower again as it drifts across the edge. The
+    event is keyed by place, so several rain rules at one place make one
+    notification, as the app keys its card „rain" per place.
+    """
     d = Decision()
     row = states.get('rain')
     armed = row is None or row['state'].get('armed', False)
     if match is not None:
         if armed:
-            d.fires.append(Fire(rule.id, 'rain', f'rain:{rule.id}',
+            d.fires.append(Fire(rule.id, 'rain', f'rain:{rule.cell_key}',
                                 match.evidence, 'new'))
             d.writes['rain'] = ({'armed': False}, now, None)
-    elif not armed:
+    elif clear and not armed:
         d.writes['rain'] = ({'armed': True}, row['fired_at'], None)
     return d

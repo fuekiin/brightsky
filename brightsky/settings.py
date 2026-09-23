@@ -56,6 +56,8 @@ PUSH_APNS_KEY_PATH = ''
 PUSH_APNS_TEAM_ID = ''
 PUSH_APNS_TOPIC = 'de.nano-wetter.app'
 PUSH_MAX_ALERTS_PER_HOUR = 10
+# Distinct cells across all devices; /health warns from 80 %
+PUSH_MAX_CELLS = 20000
 PUSH_MAX_RULES_PER_DEVICE = 50
 # Unauthenticated registrations per client IP and hour
 PUSH_REGISTER_RATE_LIMIT = 30
