@@ -114,10 +114,6 @@ def test_unknown_device_with_secret_is_adopted(push):
      'unknown_window'),
     ({'kind': 'dwd_warning'}, 'bad_conditions'),
     ({'live': {'night': False}}, 'live_not_applicable'),
-    ({'kind': 'dwd_warning', 'live': {'night': False},
-      'params': {'all': [{'warning': {'minLevel': 2,
-                                      'families': ['nebel']}}],
-                 'window': {'nextHours': 6}}}, 'live_not_applicable'),
     ({'schedule': {'at': '06:00', 'tz': 'Europe/Berlin'}},
      'unknown_schedule'),
 ])
@@ -148,10 +144,13 @@ def test_accepts_every_app_window_shape(push, db):
         'all': [{'warning': {'minLevel': 3.0, 'families': []}},
                 {'metric': 'temp', 'cmp': 'lt', 'value': 1.0}],
         'window': {'nextHours': 12}})
+    fog = rule(kind='dwd_warning', live={'night': False}, params={
+        'all': [{'warning': {'minLevel': 2, 'families': ['nebel']}}],
+        'window': {'nextHours': 6}})
     rain = rule(kind='rain_nowcast', live={'night': True}, params={
         'all': [{'rain': {}}], 'window': {'nextHours': 2}})
     digest = rule(schedule={'at': '07:00', 'tz': 'Europe/Berlin'})
-    all_rules = rules + [warning, rain, digest]
+    all_rules = rules + [warning, fog, rain, digest]
     body = push.post('/v1/devices', json=device(all_rules)).json()
     assert body['rejected'] == []
     assert len(body['accepted']) == len(all_rules)

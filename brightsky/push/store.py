@@ -153,7 +153,7 @@ async def register(conn, device, bearer, now):
             'DELETE FROM push.rules '
             'WHERE device_id = $1 AND NOT (id = ANY($2::uuid[]))',
             device['deviceId'], [r.id for r, _ in keep])
-        for rule, raw in keep:
+        for position, (rule, raw) in enumerate(keep):
             lat, lon = rule.lat_lon
             await conn.execute(
                 'INSERT INTO push.cells (cell_key, lat, lon) '
@@ -165,18 +165,20 @@ async def register(conn, device, bearer, now):
             await conn.execute(
                 """
                 INSERT INTO push.rules (
-                  id, device_id, kind, cell_key, params, schedule, live)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                  id, device_id, kind, cell_key, params, schedule, live,
+                  position)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 ON CONFLICT (id) DO UPDATE SET
                   kind = excluded.kind,
                   cell_key = excluded.cell_key,
                   params = excluded.params,
                   schedule = excluded.schedule,
                   live = excluded.live,
+                  position = excluded.position,
                   enabled = true
                 """,
                 rule.id, device['deviceId'], rule.kind, rule.cell_key,
-                rule.raw_params, rule.schedule, rule.live)
+                rule.raw_params, rule.schedule, rule.live, position)
             # An edited rule is a new rule: it re-arms (rules design §3).
             if previous is not None and (
                     previous['kind'], previous['cell_key'],

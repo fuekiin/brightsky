@@ -28,8 +28,6 @@ FAMILIES = (
     'gewitter', 'sturm', 'regen', 'schnee', 'glaette', 'hitze', 'nebel',
     'kueste',
 )
-# Families whose warnings may run as a Live Activity (design §4.5).
-LIVE_FAMILIES = frozenset({'gewitter', 'regen', 'sturm'})
 DAY_PARTS = ('allDay', 'morning', 'midday', 'evening', 'night')
 NOTICES = {'sameDay': 0, 'dayBefore': 1, 'twoDaysBefore': 2}
 NEXT_HOURS_RANGE = range(1, 49)
@@ -109,12 +107,9 @@ class Rule:
 
     @property
     def is_live_capable(self):
-        if self.rain:
-            return True
-        if self.warning is not None:
-            fams = self.warning.families
-            return not fams or bool(fams & LIVE_FAMILIES)
-        return False
+        """Rain or any official warning, any family (rules design §19,
+        `NotificationRule.isLiveCapable`)."""
+        return self.rain or self.warning is not None
 
 
 def parse_cell_key(cell_key):

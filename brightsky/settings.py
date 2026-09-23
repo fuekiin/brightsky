@@ -55,6 +55,7 @@ PUSH_APNS_KEY_ID = ''
 PUSH_APNS_KEY_PATH = ''
 PUSH_APNS_TEAM_ID = ''
 PUSH_APNS_TOPIC = 'de.nano-wetter.app'
+PUSH_MAX_ALERTS_PER_HOUR = 10
 PUSH_MAX_RULES_PER_DEVICE = 50
 # Unauthenticated registrations per client IP and hour
 PUSH_REGISTER_RATE_LIMIT = 30

@@ -31,6 +31,8 @@ CREATE TABLE push.rules (
   params     jsonb NOT NULL,
   schedule   jsonb,
   live       jsonb,
+  -- Order the app sent the rules in: breaks ties for the lead rule
+  position   int NOT NULL DEFAULT 0,
   enabled    boolean NOT NULL DEFAULT true
 );
 CREATE INDEX rules_kind_cell_idx ON push.rules (kind, cell_key) WHERE enabled;

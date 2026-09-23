@@ -201,3 +201,11 @@ def push_send(device_id, kind, title, body, payload_file):
     result = asyncio.run(
         send_handmade(device_id, kind, title, body, payload))
     print(json.dumps(result))
+
+
+@cli.command(name='push-work')
+def push_work():
+    """Start the nano push worker (warnings and forecast loops)."""
+    import asyncio
+    from brightsky.push.worker import run
+    asyncio.run(run())

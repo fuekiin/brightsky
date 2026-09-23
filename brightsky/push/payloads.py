@@ -6,6 +6,10 @@ an enum with an associated value is `{"rain": {"_0": {...}}}`, a
 `WarningLevel` is its Int raw value, and a `Date` is what ActivityKit's
 default JSONDecoder reads — seconds since 2001-01-01 (`deferredToDate`).
 The start/update round-trip on hardware is what proves this (design §12.7).
+
+The server knows neither place nor rule names (design §7): `placeName` is
+empty and `title` omitted; the widget resolves both from `ruleId` in the
+App Group (`WeatherLiveContent.resolvingNames()`, app cf6b71f).
 """
 
 import datetime
@@ -28,8 +32,8 @@ def _drop_none(d):
 
 
 def rain_content(*, state, change_at, detail, bucket_start, buckets,
-                 peak_at=None, place_name, generated_at, title=None,
-                 context=None):
+                 peak_at=None, generated_at, rule_id=None, place_name='',
+                 title=None, context=None):
     return _drop_none({
         'phase': {'rain': {'_0': _drop_none({
             'state': state,
@@ -40,6 +44,7 @@ def rain_content(*, state, change_at, detail, bucket_start, buckets,
             'peakAt': peak_at and swift_date(peak_at),
         })}},
         'placeName': place_name,
+        'ruleId': rule_id,
         'generatedAt': swift_date(generated_at),
         'title': title,
         'context': context,
@@ -47,9 +52,9 @@ def rain_content(*, state, change_at, detail, bucket_start, buckets,
 
 
 def warning_content(*, stage, level, event, onset, expires, detail,
-                    place_name, generated_at, escalated_from=None,
-                    bucket_start=None, buckets=None, title=None,
-                    context=None):
+                    generated_at, rule_id=None, place_name='',
+                    escalated_from=None, bucket_start=None, buckets=None,
+                    title=None, context=None):
     return _drop_none({
         'phase': {'warning': {'_0': _drop_none({
             'stage': stage,
@@ -63,6 +68,7 @@ def warning_content(*, stage, level, event, onset, expires, detail,
             'buckets': buckets,
         })}},
         'placeName': place_name,
+        'ruleId': rule_id,
         'generatedAt': swift_date(generated_at),
         'title': title,
         'context': context,
@@ -70,11 +76,16 @@ def warning_content(*, stage, level, event, onset, expires, detail,
 
 
 def alert(title, body, *, time_sensitive=False, thread_id=None,
-          collapse=None, data=None):
+          data=None):
+    """A notification. `title`/`body` are the server-written fallback;
+    with `data` (the `nano` object) the Notification Service Extension
+    composes the real text from its evidence (rules design §6)."""
     aps = {
         'alert': {'title': title, 'body': body},
         'sound': 'default',
     }
+    if data:
+        aps['mutable-content'] = 1
     if time_sensitive:
         aps['interruption-level'] = 'time-sensitive'
     if thread_id:
