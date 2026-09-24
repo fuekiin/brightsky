@@ -174,6 +174,53 @@ before any push traffic. So `push-work` must add little and, above all, no burst
 The switch criterion from the design stands: if the public routers' tail latency answers to
 the evaluation load, move `/weather` lookups to direct SQL behind the same source interface.
 
+## Known limits (deferred, 2026-09-24)
+
+Three findings of the PR review ([review 5310197722](https://github.com/fuekiin/brightsky/pull/1#pullrequestreview-5310197722),
+#2, #10, #11) were deliberately left for when the load is real. None matters at a few hundred
+cells; each has a clear trigger to watch for and a planned fix.
+
+### Forecast pacing ignores request time (review #2)
+
+`forecast_tick` fetches `/weather` one cell at a time and waits `spacing` between requests,
+without subtracting how long each request took. With `/weather` at ~15 ms that is fine, but at a
+daytime peak (1–3 s per request) a 15-minute cycle stops fitting after roughly 600 cells, and
+at the 20,000-cell cap one tick takes hours: rules are then decided on stale forecasts. Worse,
+the warnings loop calls `hours_for` for warning rules with value conditions and fetches
+`/weather` itself, serially, which delays warnings for everyone.
+
+- **Trigger:** the forecast tick's duration (logged as „forecast: evaluated N rules in Xs")
+  approaches its 15-minute interval, or `/health` shows `forecast` older than ~20 minutes.
+- **Fix:** subtract each request's own duration from the spacing; when behind schedule, fetch
+  with a small bounded concurrency (2); let the warnings loop use cached hours only and never
+  fetch.
+
+### Registration: one statement per rule (review #10)
+
+`store.register` runs on every app launch and issues 3–4 statements per rule (cell insert,
+previous-params select, rule upsert, possible state delete), up to about 200 round trips inside
+a transaction that holds the device row lock.
+
+- **Trigger:** `POST /v1/devices` latency in Traefik (router `push`) climbing above ~100 ms, or
+  launch spikes (a new app release) queueing registrations.
+- **Fix:** batch them: one multi-row `INSERT … ON CONFLICT` for cells, one select of all
+  previous params, one multi-row upsert for rules, one `DELETE … WHERE rule_id = ANY(…)` for the
+  state of edited rules.
+
+### Database pool of 4 for 5 loops (review #11)
+
+`push-work` opens `store.pool(max_size=4)` for the warnings, forecast, nowcast, digest and
+cleanup loops. The warnings and digest loops keep their connection during HTTP and APNs calls,
+so with both busy the per-minute nowcast check (the frame-aligned trigger) can wait for a
+connection.
+
+- **Trigger:** the nowcast loop evaluating noticeably later than a minute after a new radar
+  frame (compare its log with `parsed_files` for `composite/rv`), mostly around 07:00 (digest)
+  or during widespread warnings.
+- **Fix:** release connections around network I/O (acquire per database step, not per tick),
+  or simply raise the pool to 8 — Postgres has 100 connections, `web` and the workers use about
+  25.
+
 ## Local development
 
 ```bash
