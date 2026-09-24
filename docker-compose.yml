@@ -37,6 +37,15 @@ services:
     <<: *brightsky
     command: --migrate radar3d-work
     restart: unless-stopped
+  push-api:
+    <<: *brightsky
+    command: push-serve --bind 0.0.0.0:5001 --forwarded-allow-ips 172.16.0.0/12
+    restart: unless-stopped
+  push-work:
+    <<: *brightsky
+    # the worker container migrates; push-work only waits for it
+    command: push-work
+    restart: unless-stopped
   brightsky:
     <<: *brightsky
     scale: 0

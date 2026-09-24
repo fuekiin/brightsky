@@ -81,3 +81,15 @@ If/when `PollenParser` (and later siblings) are merged upstream and released:
 
 The brightsky fork we keep long-term either way (upstream may or may not want a `/pollen`
 endpoint; that's a separate conversation).
+
+## Migration numbers
+
+Upstream and this fork share one sequence (`migrations/NNNN_*.sql`, applied in order, the
+highest applied id recorded in `migrations`). Our migrations are 0019–0022 (pollen, health
+products, radar3d, push). **If upstream ever adds its own 0019+, the two collide**: an
+upstream migration with an id at or below our highest applied one would be skipped silently
+on our database. Policy until that happens: before every rebase, compare upstream's newest
+migration number with ours. If upstream has caught up, renumber *upstream's* new files above
+ours in the rebase commit (ours are already applied in production and must keep their ids),
+and note it in the worklog. Since 2026-09-24 `migrate()` takes a Postgres advisory lock, so
+several containers starting with `--migrate` no longer race each other.

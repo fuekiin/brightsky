@@ -1,0 +1,37 @@
+{
+  "aps": {
+    "alert": {
+      "title": "Morgenübersicht: 1 Regel",
+      "body": "Eine deiner Regeln trifft heute zu."
+    },
+    "sound": "default",
+    "mutable-content": 1,
+    "thread-id": "digest"
+  },
+  "nano": {
+    "v": 1,
+    "kind": "digest",
+    "date": "2026-09-23",
+    "ruleIds": [
+      "6f96a1c2-0000-4000-8000-000000000001"
+    ],
+    "items": [
+      {
+        "ruleId": "6f96a1c2-0000-4000-8000-000000000001",
+        "ruleIds": [
+          "6f96a1c2-0000-4000-8000-000000000001"
+        ],
+        "kind": "user_rule",
+        "cellKey": "53.55,10.01",
+        "occurrence": "rule:6f96a1c2-0000-4000-8000-000000000001:2026-09-23",
+        "evidence": {
+          "values": {
+            "temp": -2.0
+          },
+          "day": "morgen",
+          "time": "gegen 5 Uhr"
+        }
+      }
+    ]
+  }
+}

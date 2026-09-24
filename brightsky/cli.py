@@ -163,3 +163,49 @@ def radar3d_grid(directory):
     from brightsky.radar3d.ingest import grid_directory
     for cycle in grid_directory(directory):
         print(cycle.isoformat())
+
+
+@cli.command(name='push-serve')
+@click.option('--bind', default='127.0.0.1:5001', help='Bind address')
+@click.option(
+    '--forwarded-allow-ips', default='127.0.0.1',
+    help='Proxies trusted for X-Forwarded-For (Traefik in production)')
+def push_serve(bind, forwarded_allow_ips):
+    """Start the nano push API (registration, activity tokens, health)."""
+    host, port = bind.rsplit(':', 1)
+    uvicorn.run(
+        'brightsky.push.api:app',
+        host=host,
+        port=int(port),
+        proxy_headers=True,
+        forwarded_allow_ips=forwarded_allow_ips,
+    )
+
+
+@cli.command(name='push-send')
+@click.argument('device_id')
+@click.option(
+    '--kind', default='alert',
+    type=click.Choice(['alert', 'start', 'update', 'end']),
+    help='A notification, or a Live Activity start/update/end')
+@click.option('--title', default='nano Testmitteilung')
+@click.option('--body', default='Hallo vom Push-Server.')
+@click.option(
+    '--payload', 'payload_file', type=click.File(),
+    help='Send this JSON instead of the built-in example')
+def push_send(device_id, kind, title, body, payload_file):
+    """Send a hand-made push to a registered device (design §12.2)."""
+    import asyncio
+    from brightsky.push.handmade import send_handmade
+    payload = json.load(payload_file) if payload_file else None
+    result = asyncio.run(
+        send_handmade(device_id, kind, title, body, payload))
+    print(json.dumps(result))
+
+
+@cli.command(name='push-work')
+def push_work():
+    """Start the nano push worker (warnings and forecast loops)."""
+    import asyncio
+    from brightsky.push.worker import run
+    asyncio.run(run())

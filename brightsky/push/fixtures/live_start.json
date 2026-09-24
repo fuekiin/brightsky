@@ -1,0 +1,55 @@
+{
+  "aps": {
+    "timestamp": 1790164800,
+    "event": "start",
+    "content-state": {
+      "phase": {
+        "rain": {
+          "_0": {
+            "state": "coming",
+            "changeAt": 811858800.0,
+            "detail": "Leichter Regen · etwa 45 Minuten",
+            "bucketStart": 811857600.0,
+            "buckets": [
+              0,
+              0,
+              0,
+              0,
+              2.4,
+              2.4,
+              2.4,
+              2.4,
+              2.4,
+              2.4,
+              2.4,
+              2.4,
+              2.4,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "peakAt": 811858800.0
+          }
+        }
+      },
+      "placeName": "",
+      "ruleId": "6f96a1c2-0000-4000-8000-000000000002",
+      "generatedAt": 811857600.0
+    },
+    "attributes-type": "WeatherLiveAttributes",
+    "attributes": {},
+    "stale-date": 1790166600,
+    "alert": {
+      "title": "Regen zieht auf",
+      "body": "Regen in 20 Min."
+    }
+  }
+}
