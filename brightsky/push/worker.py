@@ -22,6 +22,8 @@ CELL_RESOLVE_RETRY = datetime.timedelta(days=1)
 CELL_RESOLVE_ERROR_RETRY = datetime.timedelta(minutes=10)
 # The forecast loop spreads its requests over this share of its cycle, but
 # never waits longer than FORECAST_MAX_SPACING between two of them.
+# How often the nowcast loop asks whether a new radar frame is in.
+NOWCAST_CHECK_S = 60
 FORECAST_PACE = 0.8
 FORECAST_MAX_SPACING = 1.0
 AUDIT_RETENTION = datetime.timedelta(days=30)
@@ -167,6 +169,8 @@ class Worker:
         self.warnings = sources.WarningsSource(http)
         self.forecast = sources.ForecastSource(http)
         self.nowcast = sources.NowcastSource(http)
+        self._radar_seen = None      # newest radar timestamp evaluated
+        self._nowcast_at = None      # when the nowcast loop last evaluated
 
     # MARK: warnings
 
@@ -338,8 +342,24 @@ class Worker:
 
     # MARK: nowcast
 
+    async def nowcast_due(self, conn, now):
+        """DWD publishes a radar frame every 5 minutes (at :x3:40 and
+        :x8:40) and the ingest worker has it about 40 s later. Checking
+        every minute and fetching only when a new one is in uses each frame
+        within a minute of its arrival instead of 0–5 minutes later — at the
+        same load. Without a new frame the loop still runs every 5 minutes,
+        so running activities keep moving if ingest stalls."""
+        newest = await conn.fetchval('SELECT max(timestamp) FROM radar')
+        fresh = newest is not None and newest != self._radar_seen
+        floor = (self._nowcast_at is None or now - self._nowcast_at
+                 >= datetime.timedelta(seconds=self.nowcast.interval_s))
+        return (fresh or floor), newest
+
     async def nowcast_tick(self, now):
         async with self.pool.acquire() as conn:
+            due, newest = await self.nowcast_due(conn, now)
+            if not due:
+                return None
             rows = await conn.fetch(RULES_SQL, 'rain_nowcast')
             running = {str(r['d_id']): r
                        for r in await conn.fetch(RUNNING_SQL, 'rain')}
@@ -411,6 +431,8 @@ class Worker:
             drop_carried(decided, carried)
             await dispatch_all(conn, self.client, decided, now)
             await store.mark_source(conn, 'nowcast', now)
+        # Only now: a tick that failed is retried at the next check.
+        self._radar_seen, self._nowcast_at = newest, now
         return len(rows)
 
     # MARK: digest
@@ -550,8 +572,7 @@ async def run():
                 'forecast', worker.forecast_tick,
                 sources.ForecastSource.interval_s)),
             asyncio.create_task(worker.loop(
-                'nowcast', worker.nowcast_tick,
-                sources.NowcastSource.interval_s)),
+                'nowcast', worker.nowcast_tick, NOWCAST_CHECK_S)),
             asyncio.create_task(worker.loop(
                 'digest', worker.digest_tick, 60)),
             asyncio.create_task(worker.loop(

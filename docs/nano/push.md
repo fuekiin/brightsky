@@ -144,7 +144,12 @@ Measured against production over 7 days (Traefik via Prometheus): 3 req/s at nig
 day (peak 33.5); by day p95 1.3–3 s, 0.8 % of requests over 5 s and 1.6 % ending in 499 —
 before any push traffic. So `push-work` must add little and, above all, no bursts:
 
-- **Nowcast: one request per cycle.** `/radar?format=compressed` without a bounding box, every
+- **Nowcast: aligned to DWD's radar frames.** DWD publishes a frame every 5 minutes (about :x3:40
+  and :x8:40) and the ingest worker has it about 40 s later. The loop checks the newest radar
+  timestamp every minute (`SELECT max(timestamp) FROM radar`, well under 1 ms) and evaluates
+  when a new frame is in — within a minute instead of 0–5 minutes (2.5 on average) — and at
+  least every 5 minutes if ingest stalls. The dev setup has no radar table and runs on the floor.
+- **Nowcast: one request per evaluation.** `/radar?format=compressed` without a bounding box, every
   5 minutes — the stored national frames as they are (about 2.5 MB, 24 frames), a plain read
   for `web` whatever the number of users. Each cell reads its own pixel, the same one
   `/radar?distance=1` crops (verified against production: 120 of 120 values identical).

@@ -979,3 +979,44 @@ def test_warning_stale_date_is_onset_then_expiry(push_db, monkeypatch):
     assert aps['content-state']['phase']['warning']['_0']['stage'] \
         == 'active'
     assert aps['stale-date'] == unix(NOW + 4 * H)      # „Ende in …"
+
+
+# MARK: - Frame-aligned nowcast (2026-09-24)
+
+def test_nowcast_runs_on_each_new_radar_frame(push_db, monkeypatch):
+    """Checked every minute; evaluated when a new frame is in, and at
+    least every 5 minutes without one."""
+    import httpx
+    from brightsky.push.worker import Worker
+    run(push_db, register_live([rain_rule(live_=False)]), StubAPNs(),
+        monkeypatch)
+    fetches = []
+
+    async def fetch_all(self, cells, now):
+        fetches.append(now)
+        return {k: [] for k in cells}
+    monkeypatch.setattr(sources.NowcastSource, 'fetch_all', fetch_all)
+
+    def frame(t):
+        push_db.insert('radar', [{'timestamp': t, 'source': 'test',
+                                  'precipitation_5': b'x'}])
+
+    async def main():
+        async with store.pool(max_size=2) as pool:
+            async with httpx.AsyncClient() as http:
+                w = Worker(pool, http, make_client(StubAPNs()))
+                ran = []
+                frame(NOW + 2 * H)
+                ran.append(await w.nowcast_tick(NOW))              # new
+                ran.append(await w.nowcast_tick(NOW + M))          # same
+                frame(NOW + 2 * H + 5 * M)
+                ran.append(await w.nowcast_tick(NOW + 2 * M))      # new
+                ran.append(await w.nowcast_tick(NOW + 3 * M))      # same
+                ran.append(await w.nowcast_tick(NOW + 7 * M))      # floor
+                return ran
+    try:
+        ran = asyncio.run(main())
+    finally:
+        push_db.fetch('DELETE FROM radar RETURNING timestamp')
+    assert [r is not None for r in ran] == [True, False, True, False, True]
+    assert len(fetches) == 3
