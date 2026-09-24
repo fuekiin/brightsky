@@ -724,3 +724,107 @@ def test_15_malformed_content_length_is_400(db):
                            headers={'Content-Length': 'x',
                                     'Content-Type': 'application/json'})
     assert resp.status_code == 400
+
+
+# MARK: - Rules redesign (2026-09-24)
+
+def test_rain_min_is_parsed_and_validated():
+    base = rain_rule()
+    for minimum, mm_h in (('light', 0.3), ('moderate', 2.5),
+                          ('heavy', 10.0)):
+        r = parse_rule(dict(base, params={
+            'all': [{'rain': {'min': minimum}}],
+            'window': {'nextHours': 1}}))
+        assert r.rain_threshold == pytest.approx(mm_h / 12)
+    assert parse_rule(base).rain_min == 'light'     # absent means light
+    from brightsky.push.rules import Rejected
+    with pytest.raises(Rejected) as e:
+        parse_rule(dict(base, params={
+            'all': [{'rain': {'min': 'drizzle'}}],
+            'window': {'nextHours': 1}}))
+    assert e.value.reason == 'unknown_intensity'
+
+
+def test_rain_min_decides_the_match_and_the_activity(push_db, monkeypatch):
+    """Light rain (1.2 mm/h) is rain for „leicht", not for „mäßig"."""
+    stub = StubAPNs()
+    moderate = dict(rain_rule(), params={
+        'all': [{'rain': {'min': 'moderate'}}], 'window': {'nextHours': 1}})
+    run(push_db, register_live([moderate]), stub, monkeypatch)
+    radar(monkeypatch, [0.1] * 24)          # 1.2 mm/h
+    run(push_db, ntick(NOW), stub, monkeypatch)
+    assert stub.requests == []
+    radar(monkeypatch, [0.3] * 24)          # 3.6 mm/h
+    run(push_db, ntick(NOW + 5 * M), stub, monkeypatch)
+    assert bodies(stub)[-1][2]['aps']['event'] == 'start'
+
+
+def test_forecast_notifications_wait_for_seven(push_db, monkeypatch):
+    frost = {'id': WARN_RULE, 'kind': 'user_rule', 'cellKey': CELL,
+             'params': {'all': [{'metric': 'temp', 'cmp': 'lt',
+                                 'value': 0}],
+                        'window': {'days': 'today', 'part': 'morning'}}}
+    stub = StubAPNs()
+    run(push_db, register([frost]), stub, monkeypatch)
+
+    def at(h, mi=0):
+        return datetime.datetime(2026, 9, 24, h, mi, tzinfo=berlin.TZ)
+    hours = [ev.Hour(at(h), temperature=-2) for h in range(6, 12)]
+
+    async def fake_fetch(self, cell_key, lat, lon, now):
+        self.hours[cell_key] = hours
+        self.fetched_at[cell_key] = now
+        return hours
+    monkeypatch.setattr(sources.ForecastSource, 'fetch', fake_fetch)
+
+    def ftick(t):
+        async def fn(worker, pool):
+            return await worker.forecast_tick(t)
+        return fn
+    # today opens at 07:00 anyway; a nextHours rule shows the quiet hours
+    rolling = dict(frost, id='00000000-0000-0000-0000-0000000000c1',
+                   params={'all': frost['params']['all'],
+                           'window': {'nextHours': 12}})
+    run(push_db, register([frost, rolling]), stub, monkeypatch)
+    run(push_db, ftick(at(5, 30)), stub, monkeypatch)
+    assert stub.requests == []
+    run(push_db, ftick(at(7)), stub, monkeypatch)
+    assert len(stub.requests) == 2
+
+
+def test_quiet_hours_end_is_the_next_seven():
+    from brightsky.push.worker import quiet_hours, quiet_hours_end
+    night = datetime.datetime(2026, 9, 24, 23, 30, tzinfo=berlin.TZ)
+    assert quiet_hours(night)
+    assert quiet_hours_end(night) == datetime.datetime(
+        2026, 9, 25, 7, tzinfo=berlin.TZ)
+    early = datetime.datetime(2026, 9, 25, 3, tzinfo=berlin.TZ)
+    assert quiet_hours_end(early) == datetime.datetime(
+        2026, 9, 25, 7, tzinfo=berlin.TZ)
+    assert not quiet_hours(datetime.datetime(2026, 9, 25, 7,
+                                             tzinfo=berlin.TZ))
+
+
+def test_warnings_and_rain_ignore_quiet_hours(push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register([warning_rule(WARN_RULE)]), stub, monkeypatch)
+    night = datetime.datetime(2026, 9, 24, 2, tzinfo=berlin.TZ)
+    add_alert(push_db, 'A', 'moderate', onset=night + H)
+    run(push_db, tick(night), stub, monkeypatch)
+    assert len(stub.requests) == 1
+
+
+def test_switch_shapes_from_the_app_register():
+    """RuleWireMapper.registrations(for: PlaceAlerts)."""
+    warnings = parse_rule({
+        'id': '00000000-0000-0000-0000-0000000000d1', 'kind': 'dwd_warning',
+        'cellKey': CELL, 'live': {'night': True},
+        'params': {'all': [{'warning': {'minLevel': 3, 'families': []}}],
+                   'window': {'nextHours': 48}}})
+    assert warnings.live == {'night': True}
+    rain = parse_rule({
+        'id': '00000000-0000-0000-0000-0000000000d2', 'kind': 'rain_nowcast',
+        'cellKey': CELL, 'live': {'night': False},
+        'params': {'all': [{'rain': {'min': 'heavy'}}],
+                   'window': {'nextHours': 1}}})
+    assert rain.rain_min == 'heavy'

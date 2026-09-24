@@ -161,7 +161,10 @@ def warm_day(day):
 def test_weekend_rule_waits_for_its_notice():
     saturday = warm_day(26)
     assert ev.value_matches(preset('grill'), saturday, NOW) == []
-    friday = b(2026, 9, 25, 8)
+    # Friday 08:00: not yet — the day before opens at 18:00 (2026-09-24)
+    assert ev.value_matches(preset('grill'), saturday,
+                            b(2026, 9, 25, 8)) == []
+    friday = b(2026, 9, 25, 18)
     [m] = ev.value_matches(preset('grill'), saturday, friday)
     # App: „Morgen 25 °C und trocken in Hamburg."
     assert m.evidence.day == 'morgen'
@@ -169,16 +172,45 @@ def test_weekend_rule_waits_for_its_notice():
     assert m.evidence.time == 'ab 12 Uhr'
 
 
-def test_notice_opens_at_seven_exactly():
+def test_day_before_opens_at_six_in_the_evening():
     saturday = warm_day(26)
     assert ev.value_matches(preset('grill'), saturday,
-                            b(2026, 9, 25, 6, 59)) == []
-    assert ev.value_matches(preset('grill'), saturday, b(2026, 9, 25, 7))
+                            b(2026, 9, 25, 17, 59)) == []
+    assert ev.value_matches(preset('grill'), saturday, b(2026, 9, 25, 18))
+
+
+def test_a_morgen_rule_waits_for_the_evening():
+    """testAMorgenRuleWaitsForTheEvening: during the device test a „morgen"
+    rule reached the phone at 01:23. `tomorrow` behaves as dayBefore."""
+    r = rule(conditions=[v('temp', 'gt', 20)],
+             window={'days': 'tomorrow', 'part': 'allDay'})
+    thursday = [hour(b(2026, 9, 24, h), temp=25) for h in range(10, 18)]
+    assert ev.value_matches(r, thursday, b(2026, 9, 23, 1, 23)) == []
+    assert ev.value_matches(r, thursday, b(2026, 9, 23, 17, 59)) == []
+    [m] = ev.value_matches(r, thursday, b(2026, 9, 23, 18))
+    assert m.evidence.day == 'morgen'
+
+
+def test_today_behaves_as_same_day():
+    r = rule(conditions=[v('temp', 'gt', 20)],
+             window={'days': 'today', 'part': 'allDay'})
+    today = [hour(b(2026, 9, 23, h), temp=25) for h in range(10, 18)]
+    assert ev.value_matches(r, today, b(2026, 9, 23, 6, 59)) == []
+    assert ev.value_matches(r, today, b(2026, 9, 23, 7))
+
+
+def test_two_days_before_opens_at_six_two_evenings_before():
+    r = rule(conditions=[v('temp', 'gt', 20)], window={
+        'days': 'weekdays', 'weekdays': [6], 'notice': 'twoDaysBefore',
+        'part': {'from': 12, 'to': 20}})
+    saturday = warm_day(26)
+    assert ev.value_matches(r, saturday, b(2026, 9, 24, 17, 59)) == []
+    assert ev.value_matches(r, saturday, b(2026, 9, 24, 18))
 
 
 def test_a_weekend_held_together_names_both_days():
     [m] = ev.value_matches(preset('grill'), warm_day(26) + warm_day(27),
-                           b(2026, 9, 25, 8))
+                           b(2026, 9, 25, 18))
     assert m.evidence.day == 'am Wochenende'
     assert m.occurrence_key == '2026-09-26'
 
@@ -200,7 +232,7 @@ def test_day_by_day_sunday_is_its_own_occasion():
 def test_dry_means_the_sum_stays_below():
     wet = [hour(b(2026, 9, 26, h), temp=25, precip=0.4 if h == 15 else 0,
                 gust=12) for h in range(12, 20)]
-    assert ev.value_matches(preset('grill'), wet, b(2026, 9, 25, 8)) == []
+    assert ev.value_matches(preset('grill'), wet, b(2026, 9, 25, 18)) == []
 
 
 # MARK: - Occurrences and DST

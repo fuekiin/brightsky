@@ -32,6 +32,9 @@ DAY_PARTS = ('allDay', 'morning', 'midday', 'evening', 'night')
 NOTICES = {'sameDay': 0, 'dayBefore': 1, 'twoDaysBefore': 2}
 NEXT_HOURS_RANGE = range(1, 49)
 NEXT_DAYS_RANGE = range(2, 8)
+# „Regen-Countdown ab welcher Stärke" (rules redesign 2026-09-24): real rain
+# is ≥ this for ≥ 10 minutes. Absent means light.
+RAIN_MINIMUM_MM_PER_H = {'light': 0.3, 'moderate': 2.5, 'heavy': 10.0}
 DIGEST_SCHEDULE = {'at': '07:00', 'tz': 'Europe/Berlin'}
 
 COVERAGE_LAT = (47.0, 55.5)
@@ -91,6 +94,11 @@ class WarningCondition:
 
 
 @dataclass(frozen=True)
+class RainCondition:
+    minimum: str
+
+
+@dataclass(frozen=True)
 class Rule:
     id: str
     kind: str
@@ -99,9 +107,15 @@ class Rule:
     values: tuple = ()
     warning: WarningCondition | None = None
     rain: bool = False
+    rain_min: str = 'light'   # RAIN_MINIMUM_MM_PER_H key
     schedule: dict | None = None
     live: dict | None = None
     raw_params: dict = field(default_factory=dict, compare=False)
+
+    @property
+    def rain_threshold(self):
+        """mm per 5-minute step, the radar's unit."""
+        return RAIN_MINIMUM_MM_PER_H[self.rain_min] / 12
 
     @property
     def lat_lon(self):
@@ -204,7 +218,13 @@ def parse_condition(raw):
             raise Rejected('bad_conditions')
         return WarningCondition(level, families)
     if 'rain' in raw:
-        return 'rain'
+        spec = raw['rain']
+        if not isinstance(spec, dict):
+            raise Rejected('bad_conditions')
+        minimum = spec.get('min', 'light')
+        if minimum not in RAIN_MINIMUM_MM_PER_H:
+            raise Rejected('unknown_intensity')
+        return RainCondition(minimum)
     if 'metric' in raw:
         if raw['metric'] not in METRICS:
             raise Rejected('unknown_metric')
@@ -235,7 +255,7 @@ def parse_rule(raw):
     conditions = [parse_condition(c) for c in params['all']]
     values = tuple(c for c in conditions if isinstance(c, ValueCondition))
     warnings = [c for c in conditions if isinstance(c, WarningCondition)]
-    rains = [c for c in conditions if c == 'rain']
+    rains = [c for c in conditions if isinstance(c, RainCondition)]
     if kind == 'dwd_warning':
         ok = len(warnings) == 1 and not rains
     elif kind == 'rain_nowcast':
@@ -257,6 +277,7 @@ def parse_rule(raw):
         values=values,
         warning=warnings[0] if warnings else None,
         rain=bool(rains),
+        rain_min=rains[0].minimum if rains else 'light',
         schedule=schedule,
         live=live,
         raw_params=params,

@@ -85,11 +85,14 @@ def _runs(flags):
     return out
 
 
-def analyze_rain(points, now, in_phase=False):
+def analyze_rain(points, now, in_phase=False, threshold=RAIN_MM_PER_5MIN):
     """The next change, not the next shower (§17.3).
 
     `in_phase`: an activity for this rain phase already runs, so a dry
     spell before more rain is „Nächster Schauer", not „Regen in".
+    `threshold`: what counts as rain, in mm per 5 minutes — the rule's
+    `rain.min` (`Rule.rain_threshold`). It decides the match and the
+    activity's states alike.
     """
     upcoming = sorted((p for p in points if p.timestamp >= now - STEP),
                       key=lambda p: p.timestamp)[:BUCKETS]
@@ -98,11 +101,11 @@ def analyze_rain(points, now, in_phase=False):
     start = upcoming[0].timestamp
     mm = [p.mm for p in upcoming]
     at = [p.timestamp for p in upcoming]
-    real = [(i, n) for i, n in _runs(m >= RAIN_MM_PER_5MIN for m in mm)
+    real = [(i, n) for i, n in _runs(m >= threshold for m in mm)
             if n >= 2]
     wet_runs = _runs(m > WET_MM_PER_5MIN for m in mm)
     peak = max(mm)
-    peak_at = at[mm.index(peak)] if peak >= RAIN_MM_PER_5MIN else None
+    peak_at = at[mm.index(peak)] if peak >= threshold else None
     first_rain_at = at[real[0][0]] if real else None
     # Raining now means real rain (≥ 10 min, `RuleEvaluator.firstRealRain`)
     # that has begun: one noisy step is not a shower.
@@ -115,7 +118,7 @@ def analyze_rain(points, now, in_phase=False):
         # counting to the end of the phase.
         need = GAP_KEEPS_PHASE // STEP
         dry_at = None
-        for i, n in _runs(m < RAIN_MM_PER_5MIN for m in mm):
+        for i, n in _runs(m < threshold for m in mm):
             if i > 0 and (n >= need or i + n == len(mm)):
                 dry_at = at[i]
                 break

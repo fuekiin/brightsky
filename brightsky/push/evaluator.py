@@ -289,6 +289,13 @@ def _occasions(window, dates):
     return [[d] for d in dates]
 
 
+def notice_opens_hour(days_before):
+    """`Notice.opensHour` (rules redesign 2026-09-24): the same day from
+    07:00, the day before or two days before from 18:00 that evening — so
+    nothing about tomorrow arrives in the small hours."""
+    return 7 if days_before == 0 else 18
+
+
 def occurrences(window, now):
     if window.days == 'nextHours':
         return [Occurrence(None, (
@@ -298,8 +305,10 @@ def occurrences(window, now):
     notice = window.notice
     if window.days == 'today':
         dates = [today]
+        notice = 0      # behaves as sameDay: from 07:00
     elif window.days == 'tomorrow':
         dates = [today + day]
+        notice = 1      # behaves as dayBefore: from 18:00 the evening before
     elif window.days == 'weekdays':
         # Looking back far enough that a run already under way keeps its
         # true first day as its key — a week of workdays held together is
@@ -318,7 +327,8 @@ def occurrences(window, now):
     for occasion in _occasions(window, dates):
         first = occasion[0]
         if notice is not None:
-            opens = berlin.at_hour(first - notice * day, 7)
+            opens = berlin.at_hour(first - notice * day, notice_opens_hour(
+                notice))
             if now < opens:
                 continue
         spans = []

@@ -5,129 +5,6 @@
   },
   "templates" : [
     {
-      "autoApplyDefault" : true,
-      "conditions" : [
-        {
-          "officialWarning" : {
-            "families" : [
-
-            ],
-            "minLevel" : 1
-          }
-        }
-      ],
-      "delivery" : {
-        "inAppOnly" : {
-
-        }
-      },
-      "key" : "amtlich",
-      "message" : {
-
-      },
-      "name" : "Amtliche Warnungen",
-      "subline" : "Jede DWD-Warnung in der App, ohne Mitteilung",
-      "symbolName" : "exclamationmark.bubble.fill",
-      "theme" : "warnungen",
-      "window" : {
-        "nextHours" : {
-          "_0" : 24
-        }
-      }
-    },
-    {
-      "autoApplyDefault" : true,
-      "conditions" : [
-        {
-          "officialWarning" : {
-            "families" : [
-
-            ],
-            "minLevel" : 3
-          }
-        }
-      ],
-      "delivery" : {
-        "immediate" : {
-
-        }
-      },
-      "key" : "unwetter",
-      "message" : {
-
-      },
-      "name" : "Unwetterwarnung",
-      "subline" : "Amtliche DWD-Warnung ab Stufe 3",
-      "symbolName" : "exclamationmark.triangle.fill",
-      "theme" : "warnungen",
-      "window" : {
-        "nextHours" : {
-          "_0" : 6
-        }
-      }
-    },
-    {
-      "autoApplyDefault" : false,
-      "conditions" : [
-        {
-          "rainApproaching" : {
-
-          }
-        }
-      ],
-      "delivery" : {
-        "liveActivity" : {
-          "night" : false
-        }
-      },
-      "key" : "regen",
-      "message" : {
-
-      },
-      "name" : "Regen zieht auf",
-      "subline" : "Radar, nächste Stunde — live verfolgt, mit Countdown",
-      "symbolName" : "cloud.rain.fill",
-      "theme" : "warnungen",
-      "window" : {
-        "nextHours" : {
-          "_0" : 1
-        }
-      }
-    },
-    {
-      "autoApplyDefault" : false,
-      "conditions" : [
-        {
-          "officialWarning" : {
-            "families" : [
-              "regen",
-              "sturm",
-              "gewitter"
-            ],
-            "minLevel" : 2
-          }
-        }
-      ],
-      "delivery" : {
-        "liveActivity" : {
-          "night" : false
-        }
-      },
-      "key" : "unwetter_hier",
-      "message" : {
-
-      },
-      "name" : "Unwetter, wo ich bin",
-      "subline" : "Gewitter, Starkregen, Sturm ab markant — live verfolgt, bis sie endet",
-      "symbolName" : "cloud.bolt.rain.fill",
-      "theme" : "warnungen",
-      "window" : {
-        "nextHours" : {
-          "_0" : 6
-        }
-      }
-    },
-    {
       "autoApplyDefault" : false,
       "conditions" : [
         {
@@ -150,7 +27,7 @@
       "name" : "Stürmische Böen",
       "subline" : "Böen über 70 km/h in den nächsten 12 Stunden",
       "symbolName" : "wind.circle.fill",
-      "theme" : "warnungen",
+      "theme" : "unterwegs",
       "window" : {
         "nextHours" : {
           "_0" : 12
@@ -242,7 +119,7 @@
         ]
       },
       "name" : "Grillwetter am Wochenende",
-      "subline" : "Warm, trocken, wenig Wind — Bescheid am Vortag",
+      "subline" : "Warm, trocken, wenig Wind — Bescheid am Vorabend",
       "symbolName" : "flame.fill",
       "theme" : "draussen",
       "window" : {
@@ -434,7 +311,7 @@
 
       },
       "name" : "Glätte vor der Frühschicht",
-      "subline" : "Werktags morgens unter 1 °C mit Niederschlag — Bescheid am Vortag",
+      "subline" : "Werktags morgens unter 1 °C mit Niederschlag — Bescheid am Vorabend",
       "symbolName" : "car.fill",
       "theme" : "unterwegs",
       "window" : {
@@ -442,11 +319,11 @@
           "_0" : {
             "weekdays" : {
               "_0" : [
-                3,
-                5,
                 4,
-                2,
-                1
+                5,
+                1,
+                3,
+                2
               ],
               "notice" : "dayBefore",
               "together" : false
@@ -498,10 +375,87 @@
           }
         }
       }
+    },
+    {
+      "autoApplyDefault" : false,
+      "conditions" : [
+        {
+          "value" : {
+            "comparator" : "gt",
+            "metric" : "temp",
+            "threshold" : 30
+          }
+        }
+      ],
+      "delivery" : {
+        "immediate" : {
+
+        }
+      },
+      "key" : "hitze",
+      "message" : {
+
+      },
+      "name" : "Hitze",
+      "subline" : "Über 30 °C — Bescheid am Vorabend",
+      "symbolName" : "sun.max.fill",
+      "theme" : "draussen",
+      "window" : {
+        "days" : {
+          "_0" : {
+            "tomorrow" : {
+
+            }
+          },
+          "during" : {
+            "allDay" : {
+
+            }
+          }
+        }
+      }
+    },
+    {
+      "autoApplyDefault" : false,
+      "conditions" : [
+        {
+          "value" : {
+            "comparator" : "gt",
+            "metric" : "snow",
+            "threshold" : 3
+          }
+        }
+      ],
+      "delivery" : {
+        "immediate" : {
+
+        }
+      },
+      "key" : "schnee",
+      "message" : {
+
+      },
+      "name" : "Neuschnee",
+      "subline" : "Über 3 cm morgen — Bescheid am Vorabend",
+      "symbolName" : "snowflake",
+      "theme" : "unterwegs",
+      "window" : {
+        "days" : {
+          "_0" : {
+            "tomorrow" : {
+
+            }
+          },
+          "during" : {
+            "allDay" : {
+
+            }
+          }
+        }
+      }
     }
   ],
   "themes" : [
-    "warnungen",
     "draussen",
     "unterwegs"
   ],

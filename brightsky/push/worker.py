@@ -95,6 +95,7 @@ def device_of(row):
 
 RUNNING_SQL = """
     SELECT la.*, c.warn_cell_id, c.lat, c.lon, r.cell_key,
+           r.params AS rule_params,
            d.id AS d_id, d.apns_token, d.environment,
            d.push_to_start_token, d.live_activities_enabled
     FROM push.live_activities la
@@ -103,6 +104,35 @@ RUNNING_SQL = """
     LEFT JOIN push.cells c ON c.cell_key = r.cell_key
     WHERE la.ended_at IS NULL AND la.phase = $1
 """
+
+
+QUIET_HOURS = (22, 7)
+
+
+def quiet_hours(now):
+    """22:00–07:00 Europe/Berlin: no forecast notifications. Warnings,
+    rain and the Morgenübersicht are unaffected."""
+    h = berlin.local_hour(now)
+    return h >= QUIET_HOURS[0] or h < QUIET_HOURS[1]
+
+
+def quiet_hours_end(now):
+    """The next 07:00 Europe/Berlin."""
+    local = now.astimezone(berlin.TZ)
+    day = local.date() if local.hour < QUIET_HOURS[1] else (
+        local.date() + datetime.timedelta(days=1))
+    return datetime.datetime.combine(
+        day, datetime.time(QUIET_HOURS[1]), tzinfo=berlin.TZ)
+
+
+def rain_threshold(params):
+    """The running activity's own rule's `rain.min`, in mm per 5 min."""
+    for c in (params or {}).get('all', ()):
+        if isinstance(c, dict) and isinstance(c.get('rain'), dict):
+            minimum = c['rain'].get('min', 'light')
+            if minimum in rulemod.RAIN_MINIMUM_MM_PER_H:
+                return rulemod.RAIN_MINIMUM_MM_PER_H[minimum] / 12
+    return live.RAIN_MM_PER_5MIN
 
 
 class isolated:
@@ -296,6 +326,15 @@ class Worker:
                                    row['cell_key'], e)
         await asyncio.gather(*(fetch(r) for r in cells.values()))
         self.forecast.evict(set(cells), now)
+        if quiet_hours(now):
+            # Forecast notifications never arrive between 22 and 7
+            # (rules redesign 2026-09-24). Nothing is decided now; the
+            # 07:00 tick decides on the morning's forecast, so what still
+            # holds and is still open goes out then — worded for the
+            # morning, not for the night before.
+            async with self.pool.acquire() as conn:
+                await store.mark_source(conn, 'forecast', now)
+            return len(rows)
         async with self.pool.acquire() as conn:
             states = await load_states(conn, [r['id'] for r in rows])
             decided = []
@@ -352,7 +391,8 @@ class Worker:
                     rule = rule_from_row(row)
                     device_id = str(row['d_id'])
                     rain = live.analyze_rain(points[row['cell_key']], now,
-                                             in_phase=device_id in running)
+                                             in_phase=device_id in running,
+                                             threshold=rule.rain_threshold)
                     if rain is None:
                         continue
                     hours = (await self.hours_for(row, now)
@@ -390,7 +430,8 @@ class Worker:
                         running_cell = r['cell_key']
                         if running_cell in points:
                             current = live.analyze_rain(
-                                points[running_cell], now, in_phase=True)
+                                points[running_cell], now, in_phase=True,
+                                threshold=rain_threshold(r['rule_params']))
                     if await livectl.rain_tick(conn, self.client, device,
                                                winner, current, running_cell,
                                                now) and winner:
@@ -449,8 +490,10 @@ class Worker:
                         decision = firing.decide_warnings(rule, matches,
                                                           prior, now)
                     else:
-                        rain = live.analyze_rain(await self.nowcast.fetch(
-                            row['lat'], row['lon'], now), now)
+                        rain = live.analyze_rain(
+                            await self.nowcast.fetch(row['lat'], row['lon'],
+                                                     now), now,
+                            threshold=rule.rain_threshold)
                         clear = rain is None or (
                             rain.first_rain_at is None
                             and rain.state != 'raining')
@@ -492,7 +535,8 @@ class Worker:
                 'DELETE FROM push.cells c WHERE NOT EXISTS ('
                 'SELECT 1 FROM push.rules r WHERE r.cell_key = c.cell_key)')
 
-    async def loop(self, name, tick, interval_s):
+    async def loop(self, name, tick, interval_s, wake_at=None):
+        """`wake_at(now)`: a moment the next tick must not sleep past."""
         while True:
             started = utcnow()
             try:
@@ -513,8 +557,11 @@ class Worker:
                             conn, name, started, f'{type(e).__name__}: {e}')
                 except Exception:
                     logger.exception('Could not record %s failure', name)
-            elapsed = (utcnow() - started).total_seconds()
-            await asyncio.sleep(max(1.0, interval_s - elapsed))
+            now = utcnow()
+            delay = interval_s - (now - started).total_seconds()
+            if wake_at is not None:
+                delay = min(delay, (wake_at(now) - now).total_seconds())
+            await asyncio.sleep(max(1.0, delay))
 
 
 async def run():
@@ -534,7 +581,7 @@ async def run():
                 sources.WarningsSource.interval_s)),
             asyncio.create_task(worker.loop(
                 'forecast', worker.forecast_tick,
-                sources.ForecastSource.interval_s)),
+                sources.ForecastSource.interval_s, wake_at=quiet_hours_end)),
             asyncio.create_task(worker.loop(
                 'nowcast', worker.nowcast_tick,
                 sources.NowcastSource.interval_s)),
