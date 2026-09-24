@@ -288,6 +288,10 @@ class Worker:
                     self.warning_candidates(
                         candidates, rule, row, matches,
                         states.get(rule.id, {}), decision, now)
+            # One notification per warning and device, recorded before the
+            # Live Activity takes its share, so the covered threads stay
+            # silent later too.
+            firing.dedupe_warnings(decided, states)
             carried = await self.live_warnings(conn, candidates, obs, now)
             drop_carried(decided, carried)
             await dispatch_all(conn, self.client, decided, now)
@@ -479,7 +483,7 @@ class Worker:
                                 'rain', rule.id, rain.first_rain_at or now,
                                 rain=rain, context=match.context,
                                 cell_key=rule.cell_key))
-            carried = set()
+            carried = {}
             for device_id in set(candidates) | set(running):
                 with isolated('live rain for device', device_id):
                     row, cands = candidates.get(device_id, (None, []))
@@ -499,10 +503,11 @@ class Worker:
                     if await livectl.rain_tick(conn, self.client, device,
                                                winner, current, running_cell,
                                                now) and winner:
-                        # only the winner rides on the activity (§19);
-                        # other places notify as usual
-                        carried.add((device_id, f'rain:{winner.cell_key}'))
-            drop_carried(decided, carried)
+                        carried[device_id] = winner.cell_key
+            # The activity is the notification for its own area; elsewhere,
+            # and without an activity, rain is told once per device and area
+            # (a chosen place before „Mein Standort").
+            firing.dedupe_rain(decided, states, carried)
             await dispatch_all(conn, self.client, decided, now)
             await store.mark_source(conn, 'nowcast', now)
         self._radar_seen, self._nowcast_at = newest, now

@@ -148,9 +148,12 @@ def test_two_rules_one_alert_one_push_lead_by_delivery(push_db, monkeypatch):
     add_alert(push_db, 'A', 'severe')
     run(push_db, tick(NOW), stub, monkeypatch)
     assert len(stub.requests) == 1
+    # One notification per warning and device (2026-09-25): the rank
+    # decides (a chosen place, then the broader level, then the lower
+    # rule id) — here both are equal but the id.
     nano = json.loads(stub.requests[0].content)['nano']
-    assert nano['ruleId'] == WARN_RULE_2
-    assert nano['ruleIds'] == [WARN_RULE, WARN_RULE_2]
+    assert nano['ruleId'] == WARN_RULE
+    assert nano['ruleIds'] == [WARN_RULE]
 
 
 def test_below_level_and_test_alerts_do_not_fire(push_db, monkeypatch):
