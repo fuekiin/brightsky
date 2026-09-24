@@ -127,8 +127,8 @@
           "_0" : {
             "weekdays" : {
               "_0" : [
-                7,
-                6
+                6,
+                7
               ],
               "notice" : "dayBefore",
               "together" : true
@@ -319,11 +319,11 @@
           "_0" : {
             "weekdays" : {
               "_0" : [
-                4,
                 5,
-                1,
+                2,
                 3,
-                2
+                4,
+                1
               ],
               "notice" : "dayBefore",
               "together" : false
@@ -459,5 +459,5 @@
     "draussen",
     "unterwegs"
   ],
-  "version" : 1
+  "version" : 2
 }
