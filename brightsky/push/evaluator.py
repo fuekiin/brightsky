@@ -70,6 +70,11 @@ class Warning:
 
 SEVERITY_LEVELS = {'minor': 1, 'moderate': 2, 'severe': 3, 'extreme': 4}
 
+# Short events that may run as a Live Activity under „Kurze Unwetter live"
+# (hail classifies as gewitter).
+SHORT_FAMILIES = frozenset({'gewitter', 'sturm', 'regen'})
+EXTREME = 4
+
 
 # MARK: - Wording tables (NotificationRule.swift)
 
@@ -82,6 +87,12 @@ FAMILY_LABELS = {
     'schnee': 'Schnee', 'glaette': 'Glätte & Frost', 'hitze': 'Hitze',
     'nebel': 'Nebel', 'kueste': 'Küste',
 }
+def level_title(level):
+    """A server-written title for a warning: level 4 in DWD's capitals
+    („EXTREMES UNWETTER"), levels 1–3 by their names."""
+    return 'EXTREMES UNWETTER' if level == EXTREME else LEVEL_NAMES[level]
+
+
 WEEKDAY_NAMES = [
     'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag',
     'Sonntag',
@@ -510,7 +521,7 @@ def fallback(rule, evidence):
     """What the server can say on its own — no place, no rule name."""
     if evidence.warning is not None and rule.warning is not None:
         w = evidence.warning
-        return (LEVEL_NAMES[w['level']],
+        return (level_title(w['level']),
                 f"{FAMILY_LABELS[w['family']]}, {w['onset']}")
     if rule.rain:
         return ('Regen zieht auf', 'Regen in der Nähe erwartet')

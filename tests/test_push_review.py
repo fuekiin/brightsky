@@ -1020,3 +1020,93 @@ def test_nowcast_runs_on_each_new_radar_frame(push_db, monkeypatch):
         push_db.fetch('DELETE FROM radar RETURNING timestamp')
     assert [r is not None for r in ran] == [True, False, True, False, True]
     assert len(fetches) == 3
+
+
+# MARK: - Short events live, level 4 always (decision 2026-09-24)
+
+def test_live_switch_covers_only_short_events(push_db, monkeypatch):
+    """„Kurze Unwetter live" promises Gewitter, Starkregen und Sturm."""
+    stub = StubAPNs()
+    run(push_db, register_live([warning_rule(WARN_RULE,
+                                             live={'night': True})]),
+        stub, monkeypatch)
+    add_alert(push_db, 'F', 'severe', event='FROST')
+    run(push_db, tick(NOW), stub, monkeypatch)
+    [(push_type, _, payload)] = bodies(stub)
+    assert push_type == 'alert'          # a notification, not an activity
+    add_alert(push_db, 'G', 'severe', event='GEWITTER mit HAGEL')
+    run(push_db, tick(NOW + M), stub, monkeypatch)
+    assert bodies(stub)[-1][0] == 'liveactivity'
+
+
+def test_extreme_warning_is_live_even_with_the_switch_off(push_db,
+                                                          monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([warning_rule(WARN_RULE)]), stub,
+        monkeypatch)                     # no `live`
+    add_alert(push_db, 'H', 'extreme', event='EXTREME HITZE')
+    run(push_db, tick(NOW), stub, monkeypatch)
+    [(push_type, _, payload)] = bodies(stub)
+    assert push_type == 'liveactivity'
+    assert payload['aps']['event'] == 'start'
+    assert payload['aps']['alert']['title'] == 'EXTREMES UNWETTER'
+
+
+def test_extreme_warning_without_push_to_start_is_a_notification(
+        push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([warning_rule(WARN_RULE)],
+                               push_to_start=None), stub, monkeypatch)
+    add_alert(push_db, 'O', 'extreme', event='ORKANBÖEN')
+    run(push_db, tick(NOW), stub, monkeypatch)
+    [(push_type, _, payload)] = bodies(stub)
+    assert push_type == 'alert'
+    assert payload['aps']['alert']['title'] == 'EXTREMES UNWETTER'
+    assert payload['aps']['interruption-level'] == 'time-sensitive'
+
+
+def test_level_titles_below_four_are_unchanged():
+    assert ev.level_title(3) == 'Unwetterwarnung'
+    assert ev.level_title(2) == 'Markante Warnung'
+    assert ev.level_title(4) == 'EXTREMES UNWETTER'
+
+
+def test_level_four_beats_level_three_and_rain():
+    w3 = ev.Warning('a', 3, 'gewitter', 'GEWITTER', 'h', NOW, NOW + H)
+    w4 = ev.Warning('b', 4, 'hitze', 'EXTREME HITZE', 'h', NOW + H,
+                    NOW + 5 * H)
+    rain = live.Candidate('rain', 'r', NOW - H)
+    c3 = live.Candidate('warning', 'x', NOW, level=3, warning=w3)
+    c4 = live.Candidate('warning', 'y', NOW + H, level=4, warning=w4)
+    assert live.winner([rain, c3, c4], NOW) is c4   # later, still first
+
+
+def test_extreme_warning_alerts_again_when_it_begins(push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([warning_rule(WARN_RULE,
+                                             live={'night': True})]),
+        stub, monkeypatch)
+    add_alert(push_db, 'O', 'extreme', event='ORKAN', onset=NOW + H,
+              hours=3)
+    run(push_db, tick(NOW), stub, monkeypatch)
+    report_token(push_db)
+    run(push_db, tick(NOW + H + M), stub, monkeypatch)      # begins
+    aps = bodies(stub)[-1][2]['aps']
+    assert aps['event'] == 'update'
+    assert aps['alert']['title'] == 'EXTREMES UNWETTER'
+    assert aps['alert']['body'] == 'Orkan bis 18:00'
+    assert aps['alert']['sound'] == 'default'
+
+
+def test_severe_warning_begins_silently(push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([warning_rule(WARN_RULE,
+                                             live={'night': True})]),
+        stub, monkeypatch)
+    add_alert(push_db, 'G', 'severe', onset=NOW + H, hours=3)
+    run(push_db, tick(NOW), stub, monkeypatch)
+    report_token(push_db)
+    run(push_db, tick(NOW + H + M), stub, monkeypatch)
+    aps = bodies(stub)[-1][2]['aps']
+    assert aps['event'] == 'update'
+    assert 'alert' not in aps

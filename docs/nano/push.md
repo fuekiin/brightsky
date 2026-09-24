@@ -138,6 +138,19 @@ switches register as ordinary `dwd_warning` / `rain_nowcast` rules (warnings: `n
   (they are switches).
 - `tier` is now `free` or `supporter` — still a client claim the server does not enforce.
 
+## Warning Live Activities: short events, level 4 always (2026-09-24)
+
+- A `dwd_warning` registration with `live` („Kurze Unwetter live") makes only short events live:
+  families `gewitter` (hail included), `sturm`, `regen`. Frost, heat, fog and the rest arrive as
+  notifications.
+- An **extreme warning (level 4)** is live for every matching `dwd_warning` registration, of any
+  family, even without `live` — still only with Live Activities enabled and a push-to-start token,
+  and with the same 8 h lifetime. In the precedence it comes before level 3, which comes before
+  everything else.
+- Level 4 is titled in DWD's capitals, **„EXTREMES UNWETTER"**, in the Live Activity alert and in
+  the notification's fallback; levels 1–3 keep their names.
+- Level 4 alerts again, with sound, when it begins (upcoming → active); levels 1–3 begin silently.
+
 ## Load on `web` (2026-09-24)
 
 Measured against production over 7 days (Traefik via Prometheus): 3 req/s at night, 23–31 by

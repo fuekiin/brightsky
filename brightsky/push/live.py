@@ -273,11 +273,11 @@ class Candidate:
 
 def winner(candidates, now):
     """`RuleEvaluator.liveWinner` without „here" — the server does not know
-    which place is the current location: severe warnings, then warnings
-    before rain, then the earlier."""
+    which place is the current location: extreme warnings, then severe
+    ones, then warnings before rain, then the earlier."""
     eligible = [c for c in candidates if c.start <= now + LIVE_LEAD]
     if not eligible:
         return None
     return min(eligible, key=lambda c: (
-        0 if c.level >= 3 else 1, 0 if c.kind == 'warning' else 1,
-        c.start))
+        0 if c.level >= 4 else 1 if c.level >= 3 else 2,
+        0 if c.kind == 'warning' else 1, c.start))

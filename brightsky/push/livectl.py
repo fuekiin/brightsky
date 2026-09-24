@@ -15,7 +15,7 @@ import datetime
 import logging
 import time
 
-from brightsky.push import live, payloads, sender
+from brightsky.push import evaluator as ev, live, payloads, sender
 
 
 logger = logging.getLogger('brightsky.push.live')
@@ -121,9 +121,9 @@ def _content(c, now, escalated_from=None, stage=None):
 def _alert_text(c, now, stage=None):
     if c.kind == 'rain':
         return 'Regen zieht auf', live.rain_headline(c.rain, now)
-    from brightsky.push.evaluator import LEVEL_NAMES
+    from brightsky.push.evaluator import level_title
     stage = stage or live.warning_stage(c.warning, now)
-    return (LEVEL_NAMES[c.level],
+    return (level_title(c.level),
             live.warning_headline(c.warning, stage, now))
 
 
@@ -414,12 +414,16 @@ async def warning_tick(conn, client, device, candidate, present, now):
                 stage = live.warning_stage(candidate.warning, now)
                 escalated = candidate.level > s.get('level', 0)
                 reissued = candidate.warning.end.isoformat() != expires
+                # An extreme warning alerts again when it begins
+                # (decision 2026-09-24); levels 1–3 begin silently.
+                begins = (stage == 'active' and s.get('stage') == 'upcoming'
+                          and candidate.level == ev.EXTREME)
                 if escalated or stage != s.get('stage') or reissued:
                     # Escalation alerts; a new stage or a re-issue with
                     # another expiry is a silent update (§17.4).
                     await update(
                         conn, client, device, row, candidate, now,
-                        alert=escalated,
+                        alert=escalated or begins,
                         escalated_from=s.get('level') if escalated else None,
                         stage=stage)
                 return True

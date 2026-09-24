@@ -231,10 +231,9 @@ class Worker:
                     decision = firing.decide_warnings(
                         rule, matches, states.get(rule.id, {}), now)
                     decided.append((rule, row, decision))
-                    if row['live'] is not None:
-                        self.warning_candidates(
-                            candidates, rule, row, matches,
-                            states.get(rule.id, {}), decision, now)
+                    self.warning_candidates(
+                        candidates, rule, row, matches,
+                        states.get(rule.id, {}), decision, now)
             carried = await self.live_warnings(conn, candidates, obs, now)
             drop_carried(decided, carried)
             await dispatch_all(conn, self.client, decided, now)
@@ -249,6 +248,13 @@ class Worker:
         for m in matches:
             w = m.warning
             if w.onset > now + live.LIVE_LEAD:
+                continue
+            # „Kurze Unwetter live" covers short events only; an extreme
+            # warning is live for every matching registration, of any
+            # family, even with the switch off (decision 2026-09-24).
+            if w.level != ev.EXTREME and not (
+                    row['live'] is not None
+                    and w.family in ev.SHORT_FAMILIES):
                 continue
             thread = next((k for k, t in threads.items()
                            if k.startswith('dwd:')
