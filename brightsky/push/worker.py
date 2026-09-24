@@ -224,6 +224,7 @@ class Worker:
         self.nowcast = sources.NowcastSource(http)
         self._radar_seen = None      # newest radar timestamp evaluated
         self._nowcast_at = None      # when the nowcast loop last evaluated
+        self._nowcast_failed_at = None   # last failed evaluation (back-off)
 
     # MARK: warnings
 
@@ -408,11 +409,22 @@ class Worker:
         so running activities keep moving if ingest stalls."""
         newest = await conn.fetchval('SELECT max(timestamp) FROM radar')
         fresh = newest is not None and newest != self._radar_seen
-        floor = (self._nowcast_at is None or now - self._nowcast_at
-                 >= datetime.timedelta(seconds=self.nowcast.interval_s))
-        return (fresh or floor), newest
+        interval = datetime.timedelta(seconds=self.nowcast.interval_s)
+        floor = self._nowcast_at is None or now - self._nowcast_at >= interval
+        # After a failure, wait for the floor: retrying every minute would
+        # repeat the multi-MB national request against a struggling web.
+        backing_off = (self._nowcast_failed_at is not None
+                       and now - self._nowcast_failed_at < interval)
+        return (fresh or floor) and not backing_off, newest
 
     async def nowcast_tick(self, now):
+        try:
+            return await self._nowcast_tick(now)
+        except Exception:
+            self._nowcast_failed_at = now
+            raise
+
+    async def _nowcast_tick(self, now):
         async with self.pool.acquire() as conn:
             due, newest = await self.nowcast_due(conn, now)
             if not due:
@@ -437,9 +449,14 @@ class Worker:
                 with isolated('rain rule', row['id']):
                     rule = rule_from_row(row)
                     device_id = str(row['d_id'])
-                    rain = live.analyze_rain(points[row['cell_key']], now,
-                                             in_phase=device_id in running,
-                                             threshold=rule.rain_threshold)
+                    # „Nächster Schauer" belongs to the running activity's
+                    # own place only; rain elsewhere starts as „Regen in".
+                    r = running.get(device_id)
+                    rain = live.analyze_rain(
+                        points[row['cell_key']], now,
+                        in_phase=(r is not None
+                                  and r['cell_key'] == row['cell_key']),
+                        threshold=rule.rain_threshold)
                     if rain is None:
                         continue
                     hours = (await self.hours_for(row, now)
@@ -488,8 +505,8 @@ class Worker:
             drop_carried(decided, carried)
             await dispatch_all(conn, self.client, decided, now)
             await store.mark_source(conn, 'nowcast', now)
-        # Only now: a tick that failed is retried at the next check.
         self._radar_seen, self._nowcast_at = newest, now
+        self._nowcast_failed_at = None
         return len(rows)
 
     # MARK: digest

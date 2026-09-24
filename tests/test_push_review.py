@@ -1296,3 +1296,54 @@ def test_review4_rate_limit_counts_pushes_of_the_same_tick(push_db,
     dropped = push_db.fetch("SELECT count(*) FROM push.notifications_sent "
                             "WHERE apns_reason = 'rate_limited'")[0][0]
     assert dropped == 2
+
+
+def test_review6_rain_elsewhere_opens_as_coming(push_db, monkeypatch):
+    stub = StubAPNs()
+    berlin_rule = dict(rain_rule(), id='00000000-0000-0000-0000-0000000000b2',
+                       cellKey='52.52,13.41')
+    run(push_db, register_live([rain_rule(), berlin_rule]), stub,
+        monkeypatch)
+    by_lat = {53.55: [0.2] * 24, 52.52: [0] * 24}
+
+    async def fetch_all(self, cells, now):
+        return {k: [live.Point(NOW + i * 5 * M, v)
+                    for i, v in enumerate(by_lat[lat])]
+                for k, (lat, lon) in cells.items()}
+    monkeypatch.setattr(sources.NowcastSource, 'fetch_all', fetch_all)
+    run(push_db, ntick(NOW), stub, monkeypatch)          # Hamburg starts
+    report_token(push_db)
+    by_lat[53.55] = [0] * 12 + [0.2] * 12                # Hamburg: in 60
+    by_lat[52.52] = [0] * 3 + [0.2] * 21                 # Berlin: in 15
+    run(push_db, ntick(NOW + 5 * M), stub, monkeypatch)
+    start = bodies(stub)[-1][2]['aps']
+    assert start['event'] == 'start'
+    assert start['content-state']['ruleId'] == berlin_rule['id']
+    assert start['content-state']['phase']['rain']['_0']['state'] == \
+        'coming'                                         # not „showers"
+
+
+def test_review7_failed_nowcast_backs_off_to_the_floor(push_db,
+                                                       monkeypatch):
+    import httpx
+    from brightsky.push.worker import Worker
+    run(push_db, register_live([rain_rule(live_=False)]), StubAPNs(),
+        monkeypatch)
+    calls = []
+
+    async def failing(self, cells, now):
+        calls.append(now)
+        raise RuntimeError('radar down')
+    monkeypatch.setattr(sources.NowcastSource, 'fetch_all', failing)
+
+    async def main():
+        async with store.pool(max_size=2) as pool:
+            async with httpx.AsyncClient() as http:
+                w = Worker(pool, http, make_client(StubAPNs()))
+                for minutes in (0, 1, 2, 4, 5):
+                    try:
+                        await w.nowcast_tick(NOW + minutes * M)
+                    except RuntimeError:
+                        pass
+    asyncio.run(main())
+    assert calls == [NOW, NOW + 5 * M]    # not every minute
