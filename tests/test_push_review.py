@@ -759,17 +759,20 @@ def test_rain_min_decides_the_match_and_the_activity(push_db, monkeypatch):
     assert bodies(stub)[-1][2]['aps']['event'] == 'start'
 
 
-def test_forecast_notifications_wait_for_seven(push_db, monkeypatch):
-    frost = {'id': WARN_RULE, 'kind': 'user_rule', 'cellKey': CELL,
-             'params': {'all': [{'metric': 'temp', 'cmp': 'lt',
-                                 'value': 0}],
-                        'window': {'days': 'today', 'part': 'morning'}}}
+def test_forecast_rules_decide_at_any_hour(push_db, monkeypatch):
+    """No quiet hours (decision 2026-09-24): a rolling forecast rule
+    reports at night. The notice gates still decide when an occasion may
+    first report."""
+    gusts = {'id': WARN_RULE, 'kind': 'user_rule', 'cellKey': CELL,
+             'params': {'all': [{'metric': 'gust', 'cmp': 'gt',
+                                 'value': 70}],
+                        'window': {'nextHours': 12}}}
     stub = StubAPNs()
-    run(push_db, register([frost]), stub, monkeypatch)
+    run(push_db, register([gusts]), stub, monkeypatch)
 
     def at(h, mi=0):
         return datetime.datetime(2026, 9, 24, h, mi, tzinfo=berlin.TZ)
-    hours = [ev.Hour(at(h), temperature=-2) for h in range(6, 12)]
+    hours = [ev.Hour(at(h), wind_gust_speed=85) for h in range(3, 12)]
 
     async def fake_fetch(self, cell_key, lat, lon, now):
         self.hours[cell_key] = hours
@@ -777,35 +780,13 @@ def test_forecast_notifications_wait_for_seven(push_db, monkeypatch):
         return hours
     monkeypatch.setattr(sources.ForecastSource, 'fetch', fake_fetch)
 
-    def ftick(t):
-        async def fn(worker, pool):
-            return await worker.forecast_tick(t)
-        return fn
-    # today opens at 07:00 anyway; a nextHours rule shows the quiet hours
-    rolling = dict(frost, id='00000000-0000-0000-0000-0000000000c1',
-                   params={'all': frost['params']['all'],
-                           'window': {'nextHours': 12}})
-    run(push_db, register([frost, rolling]), stub, monkeypatch)
-    run(push_db, ftick(at(5, 30)), stub, monkeypatch)
-    assert stub.requests == []
-    run(push_db, ftick(at(7)), stub, monkeypatch)
-    assert len(stub.requests) == 2
+    async def night_tick(worker, pool):
+        return await worker.forecast_tick(at(2, 30))
+    run(push_db, night_tick, stub, monkeypatch)
+    assert len(stub.requests) == 1
 
 
-def test_quiet_hours_end_is_the_next_seven():
-    from brightsky.push.worker import quiet_hours, quiet_hours_end
-    night = datetime.datetime(2026, 9, 24, 23, 30, tzinfo=berlin.TZ)
-    assert quiet_hours(night)
-    assert quiet_hours_end(night) == datetime.datetime(
-        2026, 9, 25, 7, tzinfo=berlin.TZ)
-    early = datetime.datetime(2026, 9, 25, 3, tzinfo=berlin.TZ)
-    assert quiet_hours_end(early) == datetime.datetime(
-        2026, 9, 25, 7, tzinfo=berlin.TZ)
-    assert not quiet_hours(datetime.datetime(2026, 9, 25, 7,
-                                             tzinfo=berlin.TZ))
-
-
-def test_warnings_and_rain_ignore_quiet_hours(push_db, monkeypatch):
+def test_warnings_decide_at_night(push_db, monkeypatch):
     stub = StubAPNs()
     run(push_db, register([warning_rule(WARN_RULE)]), stub, monkeypatch)
     night = datetime.datetime(2026, 9, 24, 2, tzinfo=berlin.TZ)

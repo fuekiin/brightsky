@@ -132,11 +132,10 @@ switches register as ordinary `dwd_warning` / `rain_nowcast` rules (warnings: `n
 - **Notice gates** — the same day opens at 07:00, the day before and two days before at
   18:00 that evening; `today` behaves as the same day, `tomorrow` as the day before. This
   replaces the missing gate that let a „morgen" rule arrive at 01:23 in the device test.
-- **Quiet hours** — no forecast (`user_rule`) notifications between 22:00 and 07:00. Nothing
-  is decided during them; the forecast loop wakes at 07:00 and decides on the morning's
-  forecast, so what still holds and is still open goes out then, worded for the morning.
-  Warnings, rain and the Morgenübersicht are unaffected.
-- **Catalogue** — copied again: the warning and rain presets are gone (they are switches).
+- **No quiet hours** — decided 2026-09-24 („maybe later"): forecast rules decide at any hour.
+  The notice gates above are not quiet hours; they say when an occasion may first report.
+- **Catalogue** — copied again (version 2, app `172912b`): the warning and rain presets are gone
+  (they are switches).
 - `tier` is now `free` or `supporter` — still a client claim the server does not enforce.
 
 ## Local development
