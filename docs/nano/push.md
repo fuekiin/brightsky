@@ -162,11 +162,12 @@ area while at home; both `dwd_warning` registrations match the same DWD warning.
   the lower rule id. Across ticks the registration that already told keeps the warning; another
   one that matches later gets its thread marked `covered_by` and never notifies — escalations
   follow the single thread (`firing.dedupe_warnings`, before the Live Activity takes its share).
-- **Rain:** a running rain activity is the device's rain notification; nothing else about rain
-  goes out in that tick. Without one (no push-to-start token, Live Activities off) the fallback
-  tells once per device and rain: while one rain registration has told (disarmed), no other does;
-  within a tick a chosen place, then the broader threshold, then the lower rule id
-  (`firing.dedupe_rain`).
+- **Rain** is a local event, so it is deduplicated per device *and area*: a device's rain
+  registrations belong together when their cell centres are at most 10 km apart (the app's largest
+  geofence radius; single link, so a chain of close places is one area). A running activity is the
+  notification for its own area only; rain elsewhere still notifies. Without an activity, per area:
+  while one registration there has told (disarmed), no other does; within a tick a chosen place,
+  then the broader threshold, then the lower rule id (`firing.dedupe_rain`, `rain_areas`).
 - User rules are untouched: they are distinct rules.
 
 ## Load on `web` (2026-09-24)

@@ -6,7 +6,10 @@ satisfied* → *all conditions satisfied*, at most once per occurrence.
 """
 
 import datetime
+import math
 from dataclasses import dataclass, field
+
+from brightsky.push.rules import parse_cell_key
 
 
 ROLLING_GAP = {
@@ -209,26 +212,80 @@ def _thread_ids(group, alert_id):
     return ids
 
 
-def dedupe_rain(decided, states):
-    """The rain notification fallback, once per device and rain: while
-    one of a device's rain registrations has told about the current rain
-    (disarmed, not yet re-armed), another one does not tell again; within
-    a tick a chosen place wins over „Mein Standort", then the broader
-    threshold, then the lower rule id. Mutates the decisions."""
+# Rain is a local event: a device's rain registrations speak for one area
+# only when their cell centres are this close — the app's largest geofence
+# radius (default 3 km).
+RAIN_AREA_KM = 10.0
+
+
+def _km(a, b):
+    """Great-circle distance between two (lat, lon) in km."""
+    lat1, lon1, lat2, lon2 = map(math.radians, (*a, *b))
+    h = (math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2)
+         * math.sin((lon2 - lon1) / 2) ** 2)
+    return 2 * 6371.0 * math.asin(math.sqrt(h))
+
+
+def rain_areas(rules):
+    """A device's rain registrations grouped into areas: connected within
+    RAIN_AREA_KM of each other (single link, so a chain of close places is
+    one area). Returns a list of lists of rules."""
+    rules = list(rules)
+    parent = list(range(len(rules)))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    for i in range(len(rules)):
+        for j in range(i + 1, len(rules)):
+            if _km(rules[i].lat_lon, rules[j].lat_lon) <= RAIN_AREA_KM:
+                parent[root(i)] = root(j)
+    areas = {}
+    for i, rule in enumerate(rules):
+        areas.setdefault(root(i), []).append(rule)
+    return list(areas.values())
+
+
+def dedupe_rain(decided, states, carried=None):
+    """Rain notifications once per device and AREA (rules within
+    RAIN_AREA_KM, `rain_areas`) — never across areas: rain in München is
+    news even while Berlin's activity runs or Hamburg's rain was told.
+
+    - `carried`: device id → the cell key of the rain its Live Activity
+      carries. The activity is the notification for that area only: fires
+      of the device's registrations within RAIN_AREA_KM of it are dropped.
+    - Otherwise, per area: while one registration there has told
+      (disarmed), none tells again; within a tick a chosen place wins over
+      „Mein Standort", then the broader threshold, then the lower rule id.
+
+    Mutates the decisions.
+    """
+    carried = carried or {}
     order = {'light': 0, 'moderate': 1, 'heavy': 2}
     by_device = {}
     for item in decided:
         by_device.setdefault(str(item[1]['d_id']), []).append(item)
-    for items in by_device.values():
-        fired = [(rule, d, f) for rule, _, d in items for f in d.fires]
-        if not fired:
-            continue
-        told = any(
-            st['state'].get('armed') is False
-            for rule, _, _ in items
-            for key, st in states.get(rule.id, {}).items() if key == 'rain')
-        winner = None if told else min(fired, key=lambda x: (
-            x[0].at_current_location, order[x[0].rain_min], x[0].id))
-        for rule, decision, fire in fired:
-            if winner is None or fire is not winner[2]:
-                decision.fires.remove(fire)
+    for device_id, items in by_device.items():
+        decision_of = {rule.id: decision for rule, _, decision in items}
+        if device_id in carried:
+            here = parse_cell_key(carried[device_id])
+            for rule, _, decision in items:
+                if _km(rule.lat_lon, here) <= RAIN_AREA_KM:
+                    decision.fires = []
+        for area in rain_areas(rule for rule, _, _ in items):
+            fired = [(rule, f) for rule in area
+                     for f in decision_of[rule.id].fires]
+            if not fired:
+                continue
+            told = any(
+                st['state'].get('armed') is False
+                for rule in area
+                for key, st in states.get(rule.id, {}).items()
+                if key == 'rain')
+            winner = None if told else min(fired, key=lambda x: (
+                x[0].at_current_location, order[x[0].rain_min], x[0].id))
+            for rule, fire in fired:
+                if winner is None or fire is not winner[1]:
+                    decision_of[rule.id].fires.remove(fire)

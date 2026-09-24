@@ -483,7 +483,7 @@ class Worker:
                                 'rain', rule.id, rain.first_rain_at or now,
                                 rain=rain, context=match.context,
                                 cell_key=rule.cell_key))
-            carried = set()
+            carried = {}
             for device_id in set(candidates) | set(running):
                 with isolated('live rain for device', device_id):
                     row, cands = candidates.get(device_id, (None, []))
@@ -503,14 +503,11 @@ class Worker:
                     if await livectl.rain_tick(conn, self.client, device,
                                                winner, current, running_cell,
                                                now) and winner:
-                        carried.add(device_id)
-            # The activity is the device's rain notification; without one,
-            # the fallback tells once per device (a chosen place before
-            # „Mein Standort").
-            for rule, row, decision in decided:
-                if str(row['d_id']) in carried:
-                    decision.fires = []
-            firing.dedupe_rain(decided, states)
+                        carried[device_id] = winner.cell_key
+            # The activity is the notification for its own area; elsewhere,
+            # and without an activity, rain is told once per device and area
+            # (a chosen place before „Mein Standort").
+            firing.dedupe_rain(decided, states, carried)
             await dispatch_all(conn, self.client, decided, now)
             await store.mark_source(conn, 'nowcast', now)
         self._radar_seen, self._nowcast_at = newest, now
