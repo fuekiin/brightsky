@@ -148,10 +148,26 @@ def _expiration(c, now):
 
 
 def _stale(c, now):
-    """The end of what the data can vouch for, not a cleanup mechanism."""
+    """The end of what the data can vouch for, not a cleanup mechanism —
+    and never later than the moment the countdown reaches its target.
+
+    The app counts down with the system's relative format, which turns
+    into „vor 1 Minute" once the target passes; iOS only redraws at the
+    stale-date, where the app then shows a static headline („Regen
+    jetzt"). So the stale-date is the countdown's target when that comes
+    first (seen on the phone 2026-09-24: „Regen vor 1 Minute").
+    """
     if c.kind == 'rain':
-        return now + datetime.timedelta(minutes=30)
-    return min(c.warning.end, now + live.LIVE_LEAD)
+        stale = now + datetime.timedelta(minutes=30)
+        target = c.rain.change_at
+        if target is not None and target > now:
+            stale = min(stale, target)
+        return stale
+    w = c.warning
+    stale = min(w.end, now + live.LIVE_LEAD)
+    if live.warning_stage(w, now) == 'upcoming':
+        stale = min(stale, w.onset)     # „Beginn in …" ends at the onset
+    return stale                        # active: „Ende in …" ends at expiry
 
 
 async def start_or_take_over(conn, client, device, row, c, now):

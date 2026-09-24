@@ -932,3 +932,50 @@ def test_forecast_lookups_are_sequential_and_spread_out(push_db,
     assert sleeps[0] == workermod.FORECAST_MAX_SPACING
     assert min(workermod.FORECAST_MAX_SPACING,
                workermod.FORECAST_PACE * 900 / 5000) == pytest.approx(0.144)
+
+
+# MARK: - stale-date at the countdown's target (phone test 2026-09-24)
+
+def unix(dt):
+    return int(dt.timestamp())
+
+
+def test_rain_stale_date_is_the_change_when_it_comes_first(push_db,
+                                                          monkeypatch):
+    """„Regen vor 1 Minute": iOS redraws only at the stale-date."""
+    stub = StubAPNs()
+    run(push_db, register_live([rain_rule()]), stub, monkeypatch)
+    radar(monkeypatch, [0.2 if 4 <= i <= 12 else 0 for i in range(24)])
+    run(push_db, ntick(NOW), stub, monkeypatch)
+    aps = bodies(stub)[-1][2]['aps']
+    assert aps['event'] == 'start'
+    assert aps['stale-date'] == unix(NOW + 20 * M)     # „Regen in 20 Min."
+
+
+def test_rain_stale_date_stays_30_min_when_the_change_is_later(
+        push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([rain_rule()]), stub, monkeypatch)
+    radar(monkeypatch, [0.2] * 12 + [0] * 12)   # raining, dry in 60 min
+    run(push_db, ntick(NOW), stub, monkeypatch)
+    aps = bodies(stub)[-1][2]['aps']
+    assert aps['stale-date'] == unix(NOW + 30 * M)
+
+
+def test_warning_stale_date_is_onset_then_expiry(push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([warning_rule(WARN_RULE,
+                                             live={'night': False})]),
+        stub, monkeypatch)
+    add_alert(push_db, 'A', 'moderate', onset=NOW + H, hours=3)
+    run(push_db, tick(NOW), stub, monkeypatch)
+    aps = bodies(stub)[-1][2]['aps']
+    assert aps['event'] == 'start'
+    assert aps['stale-date'] == unix(NOW + H)          # „Beginn in …"
+    report_token(push_db)
+    run(push_db, tick(NOW + H + M), stub, monkeypatch) # onset passed
+    aps = bodies(stub)[-1][2]['aps']
+    assert aps['event'] == 'update'
+    assert aps['content-state']['phase']['warning']['_0']['stage'] \
+        == 'active'
+    assert aps['stale-date'] == unix(NOW + 4 * H)      # „Ende in …"
