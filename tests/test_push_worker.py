@@ -44,6 +44,10 @@ def warning_rule(rule_id, level=2, live=None):
     return r
 
 
+async def _no_sleep(_):
+    pass
+
+
 def run(push_db, coro_fn, stub, monkeypatch):
     """Run `coro_fn(worker)` with the DWD sync check stubbed to in-sync."""
     async def in_sync(self, conn):
@@ -53,7 +57,8 @@ def run(push_db, coro_fn, stub, monkeypatch):
     async def main():
         async with store.pool(max_size=2) as pool:
             async with httpx.AsyncClient() as http:
-                worker = Worker(pool, http, make_client(stub))
+                worker = Worker(pool, http, make_client(stub),
+                                sleep=_no_sleep)
                 return await coro_fn(worker, pool)
     return asyncio.run(main())
 
@@ -248,12 +253,13 @@ def register_live(rules, push_to_start='cd' * 32):
 
 
 def radar(monkeypatch, mm):
+    """The same nowcast for every cell."""
     from brightsky.push import live
 
-    async def fetch(self, lat, lon, now):
-        return [live.Point(NOW + i * datetime.timedelta(minutes=5), v)
-                for i, v in enumerate(mm)]
-    monkeypatch.setattr(sources.NowcastSource, 'fetch', fetch)
+    async def fetch_all(self, cells, now):
+        return {k: [live.Point(NOW + i * datetime.timedelta(minutes=5), v)
+                    for i, v in enumerate(mm)] for k in cells}
+    monkeypatch.setattr(sources.NowcastSource, 'fetch_all', fetch_all)
 
 
 def ntick(at):

@@ -164,9 +164,9 @@ def test_no_nowcast_leaves_a_running_activity_alone(push_db, monkeypatch):
     run(push_db, ntick(NOW), stub, monkeypatch)
     report_token(push_db)
 
-    async def fail(self, lat, lon, now):
+    async def fail(self, cells, now):
         raise RuntimeError('radar down')
-    monkeypatch.setattr(sources.NowcastSource, 'fetch', fail)
+    monkeypatch.setattr(sources.NowcastSource, 'fetch_all', fail)
     with pytest.raises(RuntimeError):
         run(push_db, ntick(NOW + 5 * M), stub, monkeypatch)
     assert len(stub.requests) == 1
@@ -487,9 +487,9 @@ def test_r1_lifetime_is_checked_before_missing_data(push_db, monkeypatch):
     run(push_db, ntick(NOW), stub, monkeypatch)
     report_token(push_db)
 
-    async def fail(self, lat, lon, now):
+    async def fail(self, cells, now):
         raise RuntimeError('radar down')
-    monkeypatch.setattr(sources.NowcastSource, 'fetch', fail)
+    monkeypatch.setattr(sources.NowcastSource, 'fetch_all', fail)
     with pytest.raises(RuntimeError):
         run(push_db, ntick(NOW + 4 * H + M), stub, monkeypatch)
     # every lookup failed, so the tick raised before any activity work;
@@ -565,10 +565,11 @@ def test_r5_rain_elsewhere_ends_and_starts_its_own(push_db, monkeypatch):
         monkeypatch)
     by_lat = {53.55: [0.2] * 24, 52.52: [0] * 24}
 
-    async def fetch(self, lat, lon, now):
-        return [live.Point(NOW + i * 5 * M, v)
-                for i, v in enumerate(by_lat[lat])]
-    monkeypatch.setattr(sources.NowcastSource, 'fetch', fetch)
+    async def fetch_all(self, cells, now):
+        return {k: [live.Point(NOW + i * 5 * M, v)
+                    for i, v in enumerate(by_lat[lat])]
+                for k, (lat, lon) in cells.items()}
+    monkeypatch.setattr(sources.NowcastSource, 'fetch_all', fetch_all)
     run(push_db, ntick(NOW), stub, monkeypatch)
     report_token(push_db)
     # Hamburg's rain will start again in 50 min; Berlin's rain is now.
@@ -809,3 +810,125 @@ def test_switch_shapes_from_the_app_register():
         'params': {'all': [{'rain': {'min': 'heavy'}}],
                    'window': {'nextHours': 1}}})
     assert rain.rain_min == 'heavy'
+
+
+# MARK: - Load (2026-09-24): one national radar request, paced forecasts
+
+def national_radar(values_at, frames=3):
+    """A /radar?format=compressed response: `values_at` {(row, col): v} in
+    1/100 mm, the same in every frame."""
+    import base64
+    import zlib
+    import numpy as np
+    grid = np.zeros((1200, 1100), dtype='<i2')
+    for (row, col), v in values_at.items():
+        grid[row, col] = v
+    blob = base64.b64encode(zlib.compress(grid.tobytes())).decode()
+    t0 = datetime.datetime(2026, 9, 23, 11, 55, tzinfo=datetime.timezone.utc)
+    return {'radar': [{'timestamp': (t0 + i * 5 * M).isoformat(),
+                       'source': 'x', 'precipitation_5': blob}
+                      for i in range(frames)]}
+
+
+def test_national_nowcast_reads_the_pixel_the_server_would_crop():
+    import httpx
+    import numpy as np
+    from brightsky import query
+    lat, lon = 53.55, 10.01
+    # the server's own crop for lat/lon with distance=1 (query.radar)
+    x, y = query._transformer.to_xy(lat, lon)
+    row, col = int(round(y)), int(round(x))
+    grid = np.zeros((1200, 1100), dtype='<i2')
+    grid[row, col] = 25
+    import zlib
+    crop = query._load_radar(zlib.compress(grid.tobytes()),
+                             (row, col, row, col))
+    assert crop.tolist() == [[25]]
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json=national_radar({(row, col): 25}))
+
+    async def main():
+        async with httpx.AsyncClient(
+                transport=httpx.MockTransport(handler)) as http:
+            src = sources.NowcastSource(http)
+            return await src.fetch_all(
+                {'hh': (lat, lon), 'b': (52.52, 13.41), 'm': (48.14, 11.58)},
+                NOW)
+    points = asyncio.run(main())
+    assert len(requests) == 1                    # one request, three cells
+    assert 'lat' not in requests[0].url.params   # national, not per cell
+    assert requests[0].url.params['format'] == 'compressed'
+    assert [p.mm for p in points['hh']] == [0.25] * 3
+    assert [p.mm for p in points['b']] == [0.0] * 3
+
+
+def test_nowcast_tick_makes_one_request_for_many_places(push_db,
+                                                         monkeypatch):
+    import httpx
+    from brightsky.push.worker import Worker
+    rules = [dict(rain_rule(live_=False),
+                  id=f'00000000-0000-0000-0000-0000000001{i:02d}',
+                  cellKey=key)
+             for i, key in enumerate(['53.55,10.01', '52.52,13.41',
+                                      '48.14,11.58', '50.94,6.96'])]
+    run(push_db, register_live(rules), StubAPNs(), monkeypatch)
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        return httpx.Response(200, json=national_radar({}))
+
+    async def main():
+        async with store.pool(max_size=2) as pool:
+            async with httpx.AsyncClient(
+                    transport=httpx.MockTransport(handler)) as http:
+                worker = Worker(pool, http, make_client(StubAPNs()))
+                return await worker.nowcast_tick(NOW)
+    assert asyncio.run(main()) == 4
+    assert calls == ['/radar']
+
+
+def test_forecast_lookups_are_sequential_and_spread_out(push_db,
+                                                        monkeypatch):
+    from brightsky.push import worker as workermod
+    cells = ['53.55,10.01', '52.52,13.41', '48.14,11.58']
+    rules = [{'id': f'00000000-0000-0000-0000-0000000002{i:02d}',
+              'kind': 'user_rule', 'cellKey': key,
+              'params': {'all': [{'metric': 'temp', 'cmp': 'lt',
+                                  'value': -30}],
+                         'window': {'nextHours': 6}}}
+             for i, key in enumerate(cells)]
+    run(push_db, register_live(rules), StubAPNs(), monkeypatch)
+    active, peak, sleeps = [0], [0], []
+
+    async def fetch(self, cell_key, lat, lon, now):
+        active[0] += 1
+        peak[0] = max(peak[0], active[0])
+        await asyncio.sleep(0)
+        active[0] -= 1
+        self.hours[cell_key] = []
+        self.fetched_at[cell_key] = now
+        return []
+    monkeypatch.setattr(sources.ForecastSource, 'fetch', fetch)
+
+    async def record(seconds):
+        sleeps.append(seconds)
+
+    async def main():
+        import httpx
+        from brightsky.push.worker import Worker
+        async with store.pool(max_size=2) as pool:
+            async with httpx.AsyncClient() as http:
+                w = Worker(pool, http, make_client(StubAPNs()),
+                           sleep=record)
+                await w.forecast_tick(NOW)
+    asyncio.run(main())
+    assert peak[0] == 1                       # never two at once
+    assert len(sleeps) == 3
+    # few cells: capped spacing; many cells: spread over 80 % of 15 min
+    assert sleeps[0] == workermod.FORECAST_MAX_SPACING
+    assert min(workermod.FORECAST_MAX_SPACING,
+               workermod.FORECAST_PACE * 900 / 5000) == pytest.approx(0.144)

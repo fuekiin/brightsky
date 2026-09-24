@@ -130,32 +130,76 @@ class ForecastSource:
 
 
 class NowcastSource:
-    """The radar point nowcast per cell, as the app reads it: `/radar` at
-    the cell centre, `distance=1`, `precipitation_5` in 1/100 mm per
-    5 minutes (`RadarClient.fetchRadar`)."""
+    """The radar nowcast for every cell from ONE request per cycle.
+
+    `/radar?format=compressed` without a bounding box returns the stored
+    national frames as they are (1100 × 1200 int16, 1/100 mm per 5 min,
+    zlib) — for the server the cheapest request it has, and the same for
+    ten users or fifty thousand. Each cell reads the pixel `/radar` would
+    have cropped for its centre (`distance=1`, as the app asks), so the
+    values are identical to the per-cell request this replaces.
+    """
 
     id = 'nowcast'
     interval_s = 5 * 60
+    WIDTH, HEIGHT = 1100, 1200
 
     def __init__(self, http):
         self.http = http
+        self._xy = {}      # cell_key → (row, col) or None outside the grid
 
-    async def fetch(self, lat, lon, now):
+    def pixel(self, cell_key, lat, lon):
+        if cell_key not in self._xy:
+            from brightsky.query import _transformer
+            x, y = _transformer.to_xy(lat, lon)
+            inside = -0.5 <= x <= self.WIDTH - 0.5 and \
+                -0.5 <= y <= self.HEIGHT - 0.5
+            self._xy[cell_key] = (int(round(y)), int(round(x))) \
+                if inside else None
+        return self._xy[cell_key]
+
+    async def fetch_all(self, cells, now):
+        """`cells`: {cell_key: (lat, lon)} → {cell_key: [Point]}."""
+        import base64
+        import zlib
+
+        import numpy as np
+
         from brightsky.push.live import Point
+        pixels = {k: self.pixel(k, lat, lon)
+                  for k, (lat, lon) in cells.items()}
+        pixels = {k: p for k, p in pixels.items() if p is not None}
+        if not pixels:
+            return {}
+        # From the current frame on: it is stamped at the start of its 5
+        # minutes, so `now` itself would skip it.
         resp = await self.http.get(
             f'{settings.PUSH_WEATHER_URL}/radar',
-            params={'lat': lat, 'lon': lon, 'distance': 1,
-                    'date': now.isoformat(), 'format': 'plain',
-                    'tz': 'UTC'})
+            params={'format': 'compressed', 'tz': 'UTC',
+                    'date': (now - datetime.timedelta(minutes=5))
+                    .isoformat()},
+            timeout=60)
         resp.raise_for_status()
-        points = []
-        for entry in resp.json()['radar']:
-            grid = entry.get('precipitation_5') or [[0]]
-            value = (grid[0] or [0])[0] or 0
-            points.append(Point(
-                datetime.datetime.fromisoformat(entry['timestamp']),
-                value / 100))
-        return sorted(points, key=lambda p: p.timestamp)
+        keys = list(pixels)
+        rows = np.array([pixels[k][0] for k in keys])
+        cols = np.array([pixels[k][1] for k in keys])
+        out = {k: [] for k in keys}
+        for frame in resp.json()['radar']:
+            grid = np.frombuffer(
+                zlib.decompress(base64.b64decode(frame['precipitation_5'])),
+                dtype='<i2').reshape(self.HEIGHT, self.WIDTH)
+            values = grid[rows, cols]
+            ts = datetime.datetime.fromisoformat(frame['timestamp'])
+            for k, v in zip(keys, values):
+                out[k].append(Point(ts, max(int(v), 0) / 100))
+        for points in out.values():
+            points.sort(key=lambda p: p.timestamp)
+        return out
+
+    def forget(self, keep):
+        for cell_key in list(self._xy):
+            if cell_key not in keep:
+                del self._xy[cell_key]
 
 
 def http_client():

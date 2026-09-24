@@ -138,6 +138,24 @@ switches register as ordinary `dwd_warning` / `rain_nowcast` rules (warnings: `n
   (they are switches).
 - `tier` is now `free` or `supporter` — still a client claim the server does not enforce.
 
+## Load on `web` (2026-09-24)
+
+Measured against production over 7 days (Traefik via Prometheus): 3 req/s at night, 23–31 by
+day (peak 33.5); by day p95 1.3–3 s, 0.8 % of requests over 5 s and 1.6 % ending in 499 —
+before any push traffic. So `push-work` must add little and, above all, no bursts:
+
+- **Nowcast: one request per cycle.** `/radar?format=compressed` without a bounding box, every
+  5 minutes — the stored national frames as they are (about 2.5 MB, 24 frames), a plain read
+  for `web` whatever the number of users. Each cell reads its own pixel, the same one
+  `/radar?distance=1` crops (verified against production: 120 of 120 values identical).
+- **Forecast: one request at a time, spread over the cycle.** `/weather` (about 15 ms of
+  server time) per distinct cell, spaced over 80 % of the 15 minutes, never more than 1 s
+  apart: 1,000 cells ≈ 1.1 req/s, evenly. The load grows with distinct cells, not users.
+- Warnings cost `web` nothing (the loop reads the alerts table), plus one DWD listing a minute.
+
+The switch criterion from the design stands: if the public routers' tail latency answers to
+the evaluation load, move `/weather` lookups to direct SQL behind the same source interface.
+
 ## Local development
 
 ```bash

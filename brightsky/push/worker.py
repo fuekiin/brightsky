@@ -20,7 +20,10 @@ logger = logging.getLogger('brightsky.push.worker')
 
 CELL_RESOLVE_RETRY = datetime.timedelta(days=1)
 CELL_RESOLVE_ERROR_RETRY = datetime.timedelta(minutes=10)
-FORECAST_CONCURRENCY = 4
+# The forecast loop spreads its requests over this share of its cycle, but
+# never waits longer than FORECAST_MAX_SPACING between two of them.
+FORECAST_PACE = 0.8
+FORECAST_MAX_SPACING = 1.0
 AUDIT_RETENTION = datetime.timedelta(days=30)
 DEVICE_RETENTION = datetime.timedelta(days=90)
 
@@ -156,7 +159,8 @@ async def dispatch_all(conn, client, decided, now):
 
 class Worker:
 
-    def __init__(self, pool, http, client):
+    def __init__(self, pool, http, client, sleep=asyncio.sleep):
+        self.sleep = sleep
         self.pool = pool
         self.http = http
         self.client = client
@@ -293,19 +297,23 @@ class Worker:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(RULES_SQL, 'user_rule')
         cells = {r['cell_key']: r for r in rows}
-        semaphore = asyncio.Semaphore(FORECAST_CONCURRENCY)
         failed = []
-
-        async def fetch(row):
-            async with semaphore:
-                try:
-                    await self.forecast.fetch(
-                        row['cell_key'], row['lat'], row['lon'], now)
-                except Exception as e:
-                    failed.append(row['cell_key'])
-                    logger.warning('Forecast for %s failed: %r',
-                                   row['cell_key'], e)
-        await asyncio.gather(*(fetch(r) for r in cells.values()))
+        # One request at a time, spread over most of the cycle: `web` also
+        # serves the app, and a burst of lookups is what starves it
+        # (incident 2026-07-10). With few cells the spacing is capped, so a
+        # handful of rules still decide within seconds.
+        spacing = min(FORECAST_MAX_SPACING,
+                      FORECAST_PACE * self.forecast.interval_s
+                      / max(1, len(cells)))
+        for row in cells.values():
+            try:
+                await self.forecast.fetch(
+                    row['cell_key'], row['lat'], row['lon'], now)
+            except Exception as e:
+                failed.append(row['cell_key'])
+                logger.warning('Forecast for %s failed: %r',
+                               row['cell_key'], e)
+            await self.sleep(spacing)
         self.forecast.evict(set(cells), now)
         async with self.pool.acquire() as conn:
             states = await load_states(conn, [r['id'] for r in rows])
@@ -339,19 +347,9 @@ class Worker:
         for r in running.values():
             if r['cell_key']:
                 cells.setdefault(r['cell_key'], (r['lat'], r['lon']))
-        points = {}
-        semaphore = asyncio.Semaphore(FORECAST_CONCURRENCY)
-
-        async def fetch(cell_key, lat, lon):
-            async with semaphore:
-                try:
-                    points[cell_key] = await self.nowcast.fetch(lat, lon,
-                                                                now)
-                except Exception as e:
-                    logger.warning('Nowcast for %s failed: %r', cell_key, e)
-        await asyncio.gather(*(fetch(k, *ll) for k, ll in cells.items()))
-        if cells and not points:
-            raise RuntimeError('every nowcast lookup failed')
+        # One national request per cycle, whatever the number of cells.
+        points = await self.nowcast.fetch_all(cells, now) if cells else {}
+        self.nowcast.forget(set(cells))
         async with self.pool.acquire() as conn:
             states = await load_states(conn, [r['id'] for r in rows])
             decided = []
@@ -462,9 +460,10 @@ class Worker:
                         decision = firing.decide_warnings(rule, matches,
                                                           prior, now)
                     else:
+                        cell = {row['cell_key']: (row['lat'], row['lon'])}
+                        found = await self.nowcast.fetch_all(cell, now)
                         rain = live.analyze_rain(
-                            await self.nowcast.fetch(row['lat'], row['lon'],
-                                                     now), now,
+                            found.get(row['cell_key'], []), now,
                             threshold=rule.rain_threshold)
                         clear = rain is None or (
                             rain.first_rain_at is None

@@ -88,8 +88,9 @@ Notes:
 - The router labels follow the grafana router in `analytics.yml` (`websecure`, `letsencrypt`).
   Check the `web` router in the upstream `traefik.yml` uses the same names.
 - `push-work` reads forecasts and the radar from `web` over the compose network (design §3),
-  never through Traefik, so its load does not show on the public routers. It is roughly one
-  request per distinct rule cell every 5–15 min.
+  never through Traefik, so its load does not show on the public routers: one national
+  `/radar` request every 5 minutes, and one `/weather` per distinct forecast cell every
+  15 minutes, spaced out (docs/nano/push.md, „Load on web").
 - `mem_limit`s isolate a leak from `web` (design §9). Measured locally on 2026-09-24: 46 MB
   (`push-serve`) and 53 MB (`push-work`) RSS. `push-work` additionally loads DWD's warn-cell
   polygons (the same tree `web` uses for `/alerts`) the first time a new cell needs resolving;
