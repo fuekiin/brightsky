@@ -180,8 +180,10 @@ def test_only_the_winning_rain_rides_on_the_activity(push_db, monkeypatch):
     run(push_db, register_live([rain_rule(), other]), stub, monkeypatch)
     radar(monkeypatch, [0.2] * 24)
     run(push_db, ntick(NOW), stub, monkeypatch)
+    # The activity is the device's rain notification (one per device,
+    # 2026-09-25): the other place does not notify on top.
     types = sorted(r.headers['apns-push-type'] for r in stub.requests)
-    assert types == ['alert', 'liveactivity']
+    assert types == ['liveactivity']
 
 
 # MARK: - #11 no flapping, #12 one rain notification per place
@@ -219,7 +221,8 @@ def test_two_rain_rules_at_one_place_make_one_notification(push_db,
     run(push_db, ntick(NOW), stub, monkeypatch)
     [(push_type, _, payload)] = bodies(stub)
     assert payload['nano']['occurrence'] == f'rain:{CELL}'
-    assert len(payload['nano']['ruleIds']) == 2
+    # one notification, spoken by one registration (equal rank: lower id)
+    assert payload['nano']['ruleIds'] == [RAIN_RULE]
 
 
 # MARK: - #13 token races
@@ -1347,3 +1350,134 @@ def test_review7_failed_nowcast_backs_off_to_the_floor(push_db,
                         pass
     asyncio.run(main())
     assert calls == [NOW, NOW + 5 * M]    # not every minute
+
+
+# MARK: - One warning, one notification per device (2026-09-25)
+
+ZUHAUSE = '00000000-0000-0000-0000-0000000000e1'
+HIER = '00000000-0000-0000-0000-0000000000e2'
+
+
+def wrule(rule_id, level, cell=CELL, current=False, hours=12, live_=None):
+    r = {'id': rule_id, 'kind': 'dwd_warning', 'cellKey': cell,
+         'params': {'all': [{'warning': {'minLevel': level,
+                                         'families': []}}],
+                    'window': {'nextHours': hours}}}
+    if current:
+        r['params']['origin'] = 'current'
+    if live_:
+        r['live'] = live_
+    return r
+
+
+def nano_of(stub):
+    return [json.loads(r.content).get('nano', {}) for r in stub.requests
+            if r.headers['apns-push-type'] == 'alert']
+
+
+def test_origin_is_parsed():
+    assert parse_rule(wrule(HIER, 1, current=True)).at_current_location
+    assert not parse_rule(wrule(ZUHAUSE, 1)).at_current_location
+    odd = wrule(HIER, 1)
+    odd['params']['origin'] = 'gps'
+    assert not parse_rule(odd).at_current_location
+
+
+def test_same_warning_twice_in_one_tick_is_one_push(push_db, monkeypatch):
+    """„Zuhause" and „Mein Standort" while at home: the chosen place
+    speaks, even though „Mein Standort" is the broader switch."""
+    stub = StubAPNs()
+    run(push_db, register([wrule(HIER, 1, cell='53.56,10.02', current=True),
+                           wrule(ZUHAUSE, 2)]), stub, monkeypatch)
+    add_alert(push_db, 'A', 'moderate')
+    run(push_db, tick(NOW), stub, monkeypatch)
+    [nano] = nano_of(stub)
+    assert nano['ruleId'] == ZUHAUSE and nano['ruleIds'] == [ZUHAUSE]
+
+
+def test_broader_switch_wins_between_chosen_places(push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register([wrule(ZUHAUSE, 3), wrule(HIER, 2,
+                                                    cell='53.56,10.02')]),
+        stub, monkeypatch)
+    add_alert(push_db, 'A', 'severe')
+    run(push_db, tick(NOW), stub, monkeypatch)
+    [nano] = nano_of(stub)
+    assert nano['ruleId'] == HIER          # minLevel 2 beats 3
+
+
+def test_a_later_match_elsewhere_stays_silent(push_db, monkeypatch):
+    """„Mein Standort" told first; „Zuhause" (a shorter window) matches the
+    same warning an hour later — no second push, and its thread is covered
+    so escalations follow the first one only."""
+    stub = StubAPNs()
+    run(push_db, register([wrule(HIER, 1, cell='53.56,10.02', current=True),
+                           wrule(ZUHAUSE, 1, hours=1)]), stub, monkeypatch)
+    add_alert(push_db, 'A', 'moderate', onset=NOW + 2 * H, hours=3)
+    run(push_db, tick(NOW), stub, monkeypatch)
+    assert [n['ruleId'] for n in nano_of(stub)] == [HIER]
+    run(push_db, tick(NOW + 90 * M), stub, monkeypatch)   # Zuhause matches
+    assert len(nano_of(stub)) == 1
+    [(covered,)] = push_db.fetch(
+        f"SELECT state->>'covered_by' FROM push.rule_state "
+        f"WHERE rule_id = '{ZUHAUSE}'")
+    assert covered == HIER
+    # escalated and re-issued: one push, from the thread that told first
+    push_db.fetch("DELETE FROM alerts WHERE alert_id = 'A' RETURNING id")
+    add_alert(push_db, 'B', 'severe', onset=NOW + 2 * H, hours=3)
+    run(push_db, tick(NOW + 95 * M), stub, monkeypatch)
+    assert [n['ruleId'] for n in nano_of(stub)] == [HIER, HIER]
+
+
+def test_a_live_warning_is_not_also_a_notification(push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([
+        wrule(ZUHAUSE, 2, live_={'night': True}),
+        wrule(HIER, 1, cell='53.56,10.02', current=True,
+              live_={'night': True})]), stub, monkeypatch)
+    add_alert(push_db, 'G', 'severe')                     # GEWITTER
+    run(push_db, tick(NOW), stub, monkeypatch)
+    types = [r.headers['apns-push-type'] for r in stub.requests]
+    assert types == ['liveactivity']
+
+
+RAIN_HIER = '00000000-0000-0000-0000-0000000000f2'
+
+
+def rrule(rule_id, cell=CELL, current=False, minimum='light'):
+    r = {'id': rule_id, 'kind': 'rain_nowcast', 'cellKey': cell,
+         'params': {'all': [{'rain': {'min': minimum}}],
+                    'window': {'nextHours': 1}}}
+    if current:
+        r['params']['origin'] = 'current'
+    return r
+
+
+def test_rain_fallback_is_one_notification_per_device(push_db, monkeypatch):
+    """No push-to-start token: the rain arrives as a notification — once,
+    from the chosen place."""
+    stub = StubAPNs()
+    run(push_db, register_live([
+        rrule(RAIN_HIER, cell='53.56,10.02', current=True),
+        rrule(RAIN_RULE)], push_to_start=None), stub, monkeypatch)
+    radar(monkeypatch, [0.2] * 24)
+    run(push_db, ntick(NOW), stub, monkeypatch)
+    [nano] = nano_of(stub)
+    assert nano['ruleId'] == RAIN_RULE
+    # the next cycles: still one
+    run(push_db, ntick(NOW + 5 * M), stub, monkeypatch)
+    assert len(nano_of(stub)) == 1
+
+
+def test_rain_told_elsewhere_is_not_told_again(push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([rrule(RAIN_HIER, cell='53.56,10.02',
+                                      current=True)], push_to_start=None),
+        stub, monkeypatch)
+    radar(monkeypatch, [0.2] * 24)
+    run(push_db, ntick(NOW), stub, monkeypatch)            # told
+    run(push_db, register_live([
+        rrule(RAIN_HIER, cell='53.56,10.02', current=True),
+        rrule(RAIN_RULE)], push_to_start=None), stub, monkeypatch)
+    run(push_db, ntick(NOW + 5 * M), stub, monkeypatch)    # Zuhause added
+    assert [n['ruleId'] for n in nano_of(stub)] == [RAIN_HIER]

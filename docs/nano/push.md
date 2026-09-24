@@ -151,6 +151,24 @@ switches register as ordinary `dwd_warning` / `rain_nowcast` rules (warnings: `n
   the notification's fallback; levels 1–3 keep their names.
 - Level 4 alerts again, with sound, when it begins (upcoming → active); levels 1–3 begin silently.
 
+## One warning, one notification per device (2026-09-25)
+
+A saved place with automatic switching („Zuhause") and the „Mein Standort" switch cover the same
+area while at home; both `dwd_warning` registrations match the same DWD warning.
+
+- **Warnings:** a device is told about each warning once. Within a tick the best-ranked
+  registration speaks: a place the user chose before „Mein Standort" (`params.origin ==
+  "current"`, anything else counts as chosen), then the broader switch (lower `minLevel`), then
+  the lower rule id. Across ticks the registration that already told keeps the warning; another
+  one that matches later gets its thread marked `covered_by` and never notifies — escalations
+  follow the single thread (`firing.dedupe_warnings`, before the Live Activity takes its share).
+- **Rain:** a running rain activity is the device's rain notification; nothing else about rain
+  goes out in that tick. Without one (no push-to-start token, Live Activities off) the fallback
+  tells once per device and rain: while one rain registration has told (disarmed), no other does;
+  within a tick a chosen place, then the broader threshold, then the lower rule id
+  (`firing.dedupe_rain`).
+- User rules are untouched: they are distinct rules.
+
 ## Load on `web` (2026-09-24)
 
 Measured against production over 7 days (Traefik via Prometheus): 3 req/s at night, 23–31 by

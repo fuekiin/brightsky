@@ -108,6 +108,9 @@ class Rule:
     warning: WarningCondition | None = None
     rain: bool = False
     rain_min: str = 'light'   # RAIN_MINIMUM_MM_PER_H key
+    # params.origin == 'current': the app's „Mein Standort" registration.
+    # Anything else (or absent) is a place the user chose.
+    at_current_location: bool = False
     schedule: dict | None = None
     live: dict | None = None
     raw_params: dict = field(default_factory=dict, compare=False)
@@ -278,6 +281,7 @@ def parse_rule(raw):
         warning=warnings[0] if warnings else None,
         rain=bool(rains),
         rain_min=rains[0].minimum if rains else 'light',
+        at_current_location=params.get('origin') == 'current',
         schedule=schedule,
         live=live,
         raw_params=params,

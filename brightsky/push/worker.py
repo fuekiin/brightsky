@@ -288,6 +288,10 @@ class Worker:
                     self.warning_candidates(
                         candidates, rule, row, matches,
                         states.get(rule.id, {}), decision, now)
+            # One notification per warning and device, recorded before the
+            # Live Activity takes its share, so the covered threads stay
+            # silent later too.
+            firing.dedupe_warnings(decided, states)
             carried = await self.live_warnings(conn, candidates, obs, now)
             drop_carried(decided, carried)
             await dispatch_all(conn, self.client, decided, now)
@@ -499,10 +503,14 @@ class Worker:
                     if await livectl.rain_tick(conn, self.client, device,
                                                winner, current, running_cell,
                                                now) and winner:
-                        # only the winner rides on the activity (§19);
-                        # other places notify as usual
-                        carried.add((device_id, f'rain:{winner.cell_key}'))
-            drop_carried(decided, carried)
+                        carried.add(device_id)
+            # The activity is the device's rain notification; without one,
+            # the fallback tells once per device (a chosen place before
+            # „Mein Standort").
+            for rule, row, decision in decided:
+                if str(row['d_id']) in carried:
+                    decision.fires = []
+            firing.dedupe_rain(decided, states)
             await dispatch_all(conn, self.client, decided, now)
             await store.mark_source(conn, 'nowcast', now)
         self._radar_seen, self._nowcast_at = newest, now
