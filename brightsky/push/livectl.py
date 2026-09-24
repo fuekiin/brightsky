@@ -375,11 +375,12 @@ def _cancelled(row, now):
     return content
 
 
-async def warning_tick(conn, client, device, candidate, present, now):
+async def warning_tick(conn, client, device, candidate, status, now):
     """One device's warning activity per warnings cycle.
 
-    `candidate`: the winning live warning or None. `present`: whether the
-    running activity's warning is still in DWD's snapshot. Returns True
+    `candidate`: the winning live warning or None. `status`: what became
+    of the running activity's warning (`worker.warning_status`): 'here',
+    'cancelled', 'elsewhere', 'gone' or 'unknown'. Returns True
     when the candidate is carried live (or held back on purpose)."""
     async with lock(device['id']):
         row = await load(conn, device['id'])
@@ -396,9 +397,16 @@ async def warning_tick(conn, client, device, candidate, present, now):
                 return False
             same = (candidate is not None
                     and s.get('event') == candidate.event_key)
-            if not same and not present:
+            if not same and status == 'cancelled':
+                # DWD withdrew it: „Aufgehoben", then end (§17.4).
                 await end(conn, client, device, row, _cancelled(row, now),
                           now, cooldown=False)
+                return False
+            if not same and status in ('gone', 'elsewhere'):
+                # Its rule was deleted or moved away: the warning still
+                # stands, so no „aufgehoben" — end quietly.
+                await end(conn, client, device, row,
+                          dict(row['last_content']), now, cooldown=False)
                 return False
             if candidate is None:
                 return False

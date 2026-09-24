@@ -69,7 +69,7 @@ file, so this cannot be a separate overlay file):
     <<: *brightsky
     command: push-work
     restart: always
-    mem_limit: 512m
+    mem_limit: 1g
     env_file:
       - brightsky.env
       - push.env
@@ -92,7 +92,9 @@ Notes:
   `/radar` request every 5 minutes, and one `/weather` per distinct forecast cell every
   15 minutes, spaced out (docs/nano/push.md, „Load on web").
 - `mem_limit`s isolate a leak from `web` (design §9). Measured locally on 2026-09-24: 46 MB
-  (`push-serve`) and 53 MB (`push-work`) RSS. `push-work` additionally loads DWD's warn-cell
+  (`push-serve`) and 53 MB (`push-work`) RSS at start. `push-work`'s forecast cache holds
+  about 28.5 KB per cell (measured with real forecasts; 283 KB before the review fix), so
+  about 0.6 GB at the 20,000-cell cap — hence 1 GB. `push-work` additionally loads DWD's warn-cell
   polygons (the same tree `web` uses for `/alerts`) the first time a new cell needs resolving;
   that has not been measured. Watch `docker stats` after the first registrations and raise the
   limit if it gets close.

@@ -140,6 +140,55 @@ class isolated:
         return True
 
 
+async def running_threads(conn, rows):
+    """The alert ids of each running warning activity's thread, from its
+    rule's `rule_state` (device id → set of alert ids)."""
+    pairs = [(r['rule_id'], r['state'].get('event')) for r in rows
+             if r['rule_id'] is not None and r['state'].get('event')]
+    if not pairs:
+        return {}
+    found = await conn.fetch(
+        """
+        SELECT s.rule_id, s.occurrence_key, s.state
+        FROM push.rule_state s
+        JOIN unnest($1::uuid[], $2::text[]) AS p(rule_id, occurrence_key)
+          USING (rule_id, occurrence_key)
+        """, [p[0] for p in pairs], [p[1] for p in pairs])
+    by_rule = {(str(f['rule_id']), f['occurrence_key']):
+               set(f['state'].get('alert_ids', ())) for f in found}
+    return {str(r['d_id']): by_rule.get(
+                (str(r['rule_id']), r['state'].get('event')))
+            for r in rows if r['rule_id'] is not None}
+
+
+def warning_status(row, alert_ids, obs):
+    """What became of a running warning activity's warning (review #5):
+
+    - 'gone': its rule was deleted;
+    - 'cancelled': none of its thread's alerts is in DWD's snapshot any
+      more, anywhere — DWD withdrew it;
+    - 'elsewhere': it still exists, but not at the rule's current warn
+      cell (a „Mein Standort" rule moved);
+    - 'here': it is at the rule's cell;
+    - 'unknown': nothing to judge by (thread state gone, or the new
+      cell's warn cell not resolved yet) — leave the activity alone.
+    """
+    if row['rule_id'] is None:
+        return 'gone'
+    if alert_ids:
+        if not alert_ids & obs.ids:
+            return 'cancelled'
+        if row['warn_cell_id'] is None:
+            return 'unknown'
+        here = {w.id for w in obs.lookup(row['warn_cell_id'])}
+        return 'here' if alert_ids & here else 'elsewhere'
+    family = row['state'].get('family')
+    if row['warn_cell_id'] is not None and any(
+            w.family == family for w in obs.lookup(row['warn_cell_id'])):
+        return 'here'
+    return 'unknown'
+
+
 def drop_carried(decided, carried):
     """A live event the activity carries needs no notification: the
     start or update push is the notification."""
@@ -154,9 +203,13 @@ async def dispatch_all(conn, client, decided, now):
         if decision.writes or decision.fires:
             by_device.setdefault(str(row['d_id']), (row, []))[1].append(
                 (rule, row, decision))
+    outgoing, pending = [], {}
     for row, items in by_device.values():
         with isolated('delivery for device', row['d_id']):
-            await dispatcher.apply(conn, client, device_of(row), items, now)
+            outgoing += await dispatcher.apply(
+                conn, device_of(row), items, now, pending=pending)
+    with isolated('sending', f'{len(outgoing)} pushes'):
+        await dispatcher.send_all(conn, client, outgoing, now)
 
 
 class Worker:
@@ -273,21 +326,19 @@ class Worker:
         Returns {(device id, event key)} the activity carries."""
         running = {str(r['d_id']): r
                    for r in await conn.fetch(RUNNING_SQL, 'warning')}
+        threads = await running_threads(conn, running.values())
         carried = set()
         for device_id in set(candidates) | set(running):
             with isolated('live warning for device', device_id):
                 row, cands = candidates.get(device_id, (None, []))
                 device = device_of(row or running[device_id])
                 winner = live.winner(cands, now)
-                present = True
+                status = 'here'
                 if device_id in running:
                     r = running[device_id]
-                    family = r['state'].get('family')
-                    present = any(
-                        w.family == family and w.end > now
-                        for w in obs.lookup(r['warn_cell_id']))
+                    status = warning_status(r, threads.get(device_id), obs)
                 if await livectl.warning_tick(
-                        conn, self.client, device, winner, present,
+                        conn, self.client, device, winner, status,
                         now) and winner:
                     carried.add((device_id, f'dwd:{winner.warning.id}'))
         return carried
@@ -466,6 +517,11 @@ class Worker:
                     logger.warning('Digest: warnings stale, sending '
                                    'without warning rules')
             states = await load_states(conn, [r['id'] for r in rows])
+            # One national radar request for every rain rule in the digest
+            rain_cells = {r['cell_key']: (r['lat'], r['lon']) for r in rows
+                          if r['kind'] == 'rain_nowcast'}
+            radar = (await self.nowcast.fetch_all(rain_cells, now)
+                     if rain_cells else {})
             decided = []
             for row in rows:
                 with isolated('digest rule', row['id']):
@@ -488,10 +544,8 @@ class Worker:
                         decision = firing.decide_warnings(rule, matches,
                                                           prior, now)
                     else:
-                        cell = {row['cell_key']: (row['lat'], row['lon'])}
-                        found = await self.nowcast.fetch_all(cell, now)
                         rain = live.analyze_rain(
-                            found.get(row['cell_key'], []), now,
+                            radar.get(row['cell_key'], []), now,
                             threshold=rule.rain_threshold)
                         clear = rain is None or (
                             rain.first_rain_at is None
@@ -504,10 +558,13 @@ class Worker:
             for rule, row, decision in decided:
                 by_device.setdefault(str(row['d_id']), (row, []))[1].append(
                     (rule, row, decision))
+            outgoing = []
             for row, items in by_device.values():
                 with isolated('digest for device', row['d_id']):
-                    await dispatcher.apply(conn, self.client, device_of(row),
-                                           items, now, digest_date=today)
+                    outgoing += await dispatcher.apply(
+                        conn, device_of(row), items, now, digest_date=today)
+            with isolated('sending', f'{len(outgoing)} digests'):
+                await dispatcher.send_all(conn, self.client, outgoing, now)
             await store.mark_source(conn, 'digest', now)
         return len(rows)
 

@@ -28,6 +28,7 @@ class Stale(Exception):
 class WarningsObservation:
     fetched_at: datetime.datetime
     by_cell: dict = field(default_factory=dict)   # warn_cell_id → [Warning]
+    ids: set = field(default_factory=set)         # every alert id, nationwide
 
     def lookup(self, warn_cell_id):
         return self.by_cell.get(warn_cell_id, [])
@@ -83,6 +84,7 @@ class WarningsSource:
                 family=ev.classify(r['event_de']), event=r['event_de'] or '',
                 headline=r['headline_de'], onset=r['onset'],
                 expires=r['expires'], event_code=r['event_code'])
+            obs.ids.add(w.id)
             for cell in r['cells']:
                 obs.by_cell.setdefault(cell, []).append(w)
         return obs
@@ -95,7 +97,9 @@ class ForecastSource:
 
     id = 'forecast'
     interval_s = 15 * 60
-    DAYS_BACK = 1
+    # Nothing before the last hour is ever evaluated: spans start at `now`,
+    # warnings look back one hour.
+    LOOKBACK = datetime.timedelta(hours=1)
     DAYS_AHEAD = 10
 
     def __init__(self, http):
@@ -104,14 +108,17 @@ class ForecastSource:
         self.fetched_at = {}     # cell_key → datetime
 
     async def fetch(self, cell_key, lat, lon, now):
-        date = (now - datetime.timedelta(days=self.DAYS_BACK)).isoformat()
+        date = (now - self.LOOKBACK).isoformat()
         last = (now + datetime.timedelta(days=self.DAYS_AHEAD)).isoformat()
         resp = await self.http.get(
             f'{settings.PUSH_WEATHER_URL}/weather',
             params={'lat': lat, 'lon': lon, 'date': date, 'last_date': last,
                     'tz': 'UTC'})
         resp.raise_for_status()
-        hours = [ev.Hour.from_brightsky(r) for r in resp.json()['weather']]
+        keep_from = now - self.LOOKBACK
+        hours = [h for h in (ev.Hour.from_brightsky(r)
+                             for r in resp.json()['weather'])
+                 if h.timestamp >= keep_from]
         self.hours[cell_key] = hours
         self.fetched_at[cell_key] = now
         return hours
@@ -154,8 +161,13 @@ class NowcastSource:
             x, y = _transformer.to_xy(lat, lon)
             inside = -0.5 <= x <= self.WIDTH - 0.5 and \
                 -0.5 <= y <= self.HEIGHT - 0.5
-            self._xy[cell_key] = (int(round(y)), int(round(x))) \
-                if inside else None
+            # round(1099.5) is 1100 (half to even): clamp into the grid, as
+            # query.radar clamps its crop — an out-of-range index would
+            # abort the tick for every cell.
+            self._xy[cell_key] = (
+                min(max(int(round(y)), 0), self.HEIGHT - 1),
+                min(max(int(round(x)), 0), self.WIDTH - 1),
+            ) if inside else None
         return self._xy[cell_key]
 
     async def fetch_all(self, cells, now):

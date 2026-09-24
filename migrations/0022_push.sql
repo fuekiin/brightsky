@@ -74,6 +74,9 @@ CREATE TABLE push.notifications_sent (
   apns_id         text
 );
 CREATE INDEX notifications_sent_sent_at_idx ON push.notifications_sent (sent_at);
+-- The per-device rate limit counts one device's pushes of the last hour
+CREATE INDEX notifications_sent_device_idx
+  ON push.notifications_sent (device_id, sent_at);
 
 -- Liveness of the push-work loops and the sender, read by push-api's /health.
 CREATE TABLE push.source_status (

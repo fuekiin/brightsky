@@ -19,9 +19,27 @@ HOUR = datetime.timedelta(hours=1)
 
 # MARK: - Inputs
 
-@dataclass(frozen=True)
+# Forecast values repeat heavily across cells (the same hourly timestamps,
+# 0.0 mm, 100 % cloud): share one object per distinct value instead of
+# holding a copy per cell. Bounded by the number of distinct values.
+_SHARED = {}
+
+
+def _shared(value):
+    if value is None:
+        return None
+    try:
+        return _SHARED.setdefault(value, value)
+    except TypeError:       # unhashable: keep as is
+        return value
+
+
+@dataclass(frozen=True, slots=True)
 class Hour:
-    """One hour of `/weather`, in Bright Sky's default (dwd) units."""
+    """One hour of `/weather`, in Bright Sky's default (dwd) units.
+
+    Slotted and built from shared values: the forecast cache holds about
+    240 of these per cell, for up to PUSH_MAX_CELLS cells."""
     timestamp: datetime.datetime
     temperature: float | None = None
     precipitation: float | None = None
@@ -38,17 +56,18 @@ class Hour:
         ts = record['timestamp']
         if isinstance(ts, str):
             ts = datetime.datetime.fromisoformat(ts)
+        get = record.get
         return cls(
-            timestamp=ts.astimezone(berlin.UTC),
-            temperature=record.get('temperature'),
-            precipitation=record.get('precipitation'),
-            sunshine=record.get('sunshine'),
-            wind_speed=record.get('wind_speed'),
-            wind_gust_speed=record.get('wind_gust_speed'),
-            cloud_cover=record.get('cloud_cover'),
-            relative_humidity=record.get('relative_humidity'),
-            visibility=record.get('visibility'),
-            condition=record.get('condition'),
+            timestamp=_shared(ts.astimezone(berlin.UTC)),
+            temperature=_shared(get('temperature')),
+            precipitation=_shared(get('precipitation')),
+            sunshine=_shared(get('sunshine')),
+            wind_speed=_shared(get('wind_speed')),
+            wind_gust_speed=_shared(get('wind_gust_speed')),
+            cloud_cover=_shared(get('cloud_cover')),
+            relative_humidity=_shared(get('relative_humidity')),
+            visibility=_shared(get('visibility')),
+            condition=_shared(get('condition')),
         )
 
 

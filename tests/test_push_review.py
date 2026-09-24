@@ -605,7 +605,8 @@ def test_6a_one_device_failing_delivery_does_not_stop_others(
     original = dispatcher.apply
     calls = []
 
-    async def flaky(conn, client, device, items, now, digest_date=None):
+    async def flaky(conn, device, items, now, digest_date=None,
+                    pending=None):
         calls.append(device['id'])
         raise RuntimeError('boom')
     monkeypatch.setattr(dispatcher, 'apply', flaky)
@@ -1110,3 +1111,188 @@ def test_severe_warning_begins_silently(push_db, monkeypatch):
     aps = bodies(stub)[-1][2]['aps']
     assert aps['event'] == 'update'
     assert 'alert' not in aps
+
+
+# MARK: - PR review fixes (review 5310197722)
+
+def test_review5_deleted_rule_ends_quietly(push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([warning_rule(WARN_RULE,
+                                             live={'night': True})]),
+        stub, monkeypatch)
+    add_alert(push_db, 'A', 'moderate')
+    run(push_db, tick(NOW), stub, monkeypatch)
+    report_token(push_db)
+    run(push_db, register_live([]), stub, monkeypatch)      # rule deleted
+    run(push_db, tick(NOW + M), stub, monkeypatch)
+    aps = bodies(stub)[-1][2]['aps']
+    assert aps['event'] == 'end'
+    assert aps['content-state']['phase']['warning']['_0']['stage'] \
+        != 'cancelled'                    # the warning still stands
+
+
+def test_review5_moved_rule_ends_quietly(push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([warning_rule(WARN_RULE,
+                                             live={'night': True})]),
+        stub, monkeypatch)
+    add_alert(push_db, 'A', 'moderate')
+    run(push_db, tick(NOW), stub, monkeypatch)
+    report_token(push_db)
+    moved = dict(warning_rule(WARN_RULE, live={'night': True}),
+                 cellKey='52.52,13.41')
+    run(push_db, register_live([moved]), stub, monkeypatch)
+    with push_db.cursor() as cur:        # the new cell: another warn cell
+        cur.execute("UPDATE push.cells SET warn_cell_id = 111000000 "
+                    "WHERE cell_key = '52.52,13.41'")
+    push_db.commit()
+    run(push_db, tick(NOW + M), stub, monkeypatch)
+    aps = bodies(stub)[-1][2]['aps']
+    assert aps['event'] == 'end'
+    assert aps['content-state']['phase']['warning']['_0']['stage'] \
+        != 'cancelled'
+
+
+def test_review5_unresolved_new_cell_leaves_it_alone(push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([warning_rule(WARN_RULE,
+                                             live={'night': True})]),
+        stub, monkeypatch)
+    add_alert(push_db, 'A', 'moderate')
+    run(push_db, tick(NOW), stub, monkeypatch)
+    report_token(push_db)
+    moved = dict(warning_rule(WARN_RULE, live={'night': True}),
+                 cellKey='52.52,13.41')
+    run(push_db, register_live([moved]), stub, monkeypatch)
+    with push_db.cursor() as cur:        # not resolved yet
+        cur.execute("UPDATE push.cells SET warn_cell_id = NULL, "
+                    "resolved_at = now() WHERE cell_key = '52.52,13.41'")
+    push_db.commit()
+    n = len(stub.requests)
+    run(push_db, tick(NOW + M), stub, monkeypatch)
+    assert len(stub.requests) == n
+
+
+def test_review8_edge_pixel_is_clamped_into_the_grid():
+    import httpx
+    src = sources.NowcastSource(httpx.AsyncClient())
+    from brightsky import query
+    # a coordinate whose projected x rounds past the last column
+    monkey = query._transformer.to_xy
+    try:
+        query._transformer.to_xy = lambda lat, lon: (1099.5, 1199.5)
+        assert src.pixel('edge', 0, 0) == (1199, 1099)
+    finally:
+        query._transformer.to_xy = monkey
+
+
+def test_review1_digest_fetches_the_radar_once(push_db, monkeypatch):
+    digest = {'at': '07:00', 'tz': 'Europe/Berlin'}
+    rules = [dict(rain_rule(live_=False), schedule=digest,
+                  id=f'00000000-0000-0000-0000-0000000003{i:02d}',
+                  cellKey=key)
+             for i, key in enumerate(['53.55,10.01', '52.52,13.41',
+                                      '48.14,11.58'])]
+    run(push_db, register_live(rules), StubAPNs(), monkeypatch)
+    calls = []
+
+    async def fetch_all(self, cells, now):
+        calls.append(set(cells))
+        return {k: [] for k in cells}
+    monkeypatch.setattr(sources.NowcastSource, 'fetch_all', fetch_all)
+    seven = datetime.datetime(2026, 9, 24, 7, 5, tzinfo=berlin.TZ)
+
+    async def dtick(worker, pool):
+        return await worker.digest_tick(seven)
+    run(push_db, dtick, StubAPNs(), monkeypatch)
+    assert len(calls) == 1 and len(calls[0]) == 3
+
+
+def test_review3_hours_are_slotted_and_share_values():
+    a = ev.Hour.from_brightsky({'timestamp': '2026-09-24T12:00:00+00:00',
+                                'temperature': 12.5, 'condition': 'dry'})
+    b = ev.Hour.from_brightsky({'timestamp': '2026-09-24T12:00:00+00:00',
+                                'temperature': 12.5, 'condition': 'dry'})
+    assert not hasattr(a, '__dict__')
+    assert a.timestamp is b.timestamp and a.temperature is b.temperature
+
+
+def test_review3_forecast_is_fetched_from_one_hour_back():
+    import httpx
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.params['date'])
+        return httpx.Response(200, json={'weather': [
+            {'timestamp': (NOW - 3 * H).isoformat(), 'temperature': 1},
+            {'timestamp': NOW.isoformat(), 'temperature': 2}]})
+
+    async def main():
+        async with httpx.AsyncClient(
+                transport=httpx.MockTransport(handler)) as http:
+            return await sources.ForecastSource(http).fetch('c', 1, 2, NOW)
+    hours = asyncio.run(main())
+    assert seen == [(NOW - H).isoformat()]
+    assert [h.temperature for h in hours] == [2]
+
+
+def test_review9_rate_limit_index_exists(db):
+    [(n,)] = db.fetch("SELECT count(*) FROM pg_indexes WHERE schemaname = "
+                      "'push' AND indexname = 'notifications_sent_device_idx'")
+    assert n == 1
+
+
+def test_review4_pushes_go_out_in_parallel(push_db):
+    """One device stuck in retries must not hold up the others."""
+    import time
+    from brightsky.push import dispatcher
+
+    class SlowAPNs:
+        async def send(self, token, environment, payload, **kw):
+            await asyncio.sleep(0.2)
+            if token == 'dead':
+                return apns.Result(503, 'ServiceUnavailable')
+            return apns.Result(200, None, 'id')
+
+    out = [dispatcher.Outgoing(DEVICE, 'sandbox', t, {}, None, 'k', 'k')
+           for t in ['a', 'b', 'c', 'd', 'dead']]
+
+    async def main():
+        async with store.pool(max_size=1) as pool:
+            async with pool.acquire() as conn:
+                t = time.perf_counter()
+                results = await dispatcher.send_all(
+                    conn, SlowAPNs(), out, NOW,
+                    sleep=lambda s: asyncio.sleep(0))
+                return time.perf_counter() - t, results
+    elapsed, results = asyncio.run(main())
+    # sequential would be 5 × 0.2 s plus the dead token's 3 retries
+    assert elapsed < 1.2
+    assert [r.status for r in results] == [200, 200, 200, 200, 503]
+    assert len(push_db.fetch('SELECT * FROM push.notifications_sent')) == 5
+    push_db.fetch('DELETE FROM push.notifications_sent RETURNING id')
+
+
+def test_review4_rate_limit_counts_pushes_of_the_same_tick(push_db,
+                                                           monkeypatch):
+    from brightsky.push import dispatcher, firing
+    from brightsky.settings import settings
+    run(push_db, register_live([]), StubAPNs(), monkeypatch)
+    device = {'id': DEVICE, 'apns_token': 'ab' * 32,
+              'environment': 'sandbox'}
+    r = parse_rule(dict(rain_rule(live_=False)))
+    row = {'live': None, 'position': 0}
+    decision = firing.Decision(fires=[
+        firing.Fire(r.id, f'k{i}', f'event{i}', ev.Evidence(rain={}), 'new')
+        for i in range(12)])
+
+    async def main():
+        async with store.pool(max_size=1) as pool:
+            async with pool.acquire() as conn:
+                return await dispatcher.apply(
+                    conn, device, [(r, row, decision)], NOW, pending={})
+    out = asyncio.run(main())
+    assert len(out) == settings.PUSH_MAX_ALERTS_PER_HOUR
+    dropped = push_db.fetch("SELECT count(*) FROM push.notifications_sent "
+                            "WHERE apns_reason = 'rate_limited'")[0][0]
+    assert dropped == 2
