@@ -268,6 +268,29 @@ def test_absent_tokens(push, db):
     assert db.fetch('SELECT apns_token FROM push.devices')[0][0] is None
 
 
+def test_a_registration_without_tokens_keeps_the_stored_ones(push, db):
+    # The app registers at launch before iOS hands its tokens out again;
+    # that must not leave the server unable to reach the phone.
+    d = device(pushToStartToken='ef' * 32)
+    secret = push.post('/v1/devices', json=d).json()['deviceSecret']
+    again = dict(d)
+    del again['apnsToken']
+    del again['pushToStartToken']
+    assert push.post('/v1/devices', json=again,
+                     headers=auth(secret)).status_code == 200
+    row = db.fetch('SELECT apns_token, push_to_start_token FROM push.devices')[0]
+    assert tuple(row) == (APNS, 'ef' * 32)
+
+
+def test_a_new_token_replaces_the_stored_one(push, db):
+    d = device()
+    secret = push.post('/v1/devices', json=d).json()['deviceSecret']
+    fresh = 'cd' * 32
+    assert push.post('/v1/devices', json=dict(d, apnsToken=fresh),
+                     headers=auth(secret)).status_code == 200
+    assert db.fetch('SELECT apns_token FROM push.devices')[0][0] == fresh
+
+
 def test_rate_limit(push, monkeypatch):
     from brightsky.settings import settings
     monkeypatch.setitem(settings, 'PUSH_REGISTER_RATE_LIMIT', 2)
