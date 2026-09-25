@@ -278,7 +278,8 @@ def test_a_registration_without_tokens_keeps_the_stored_ones(push, db):
     del again['pushToStartToken']
     assert push.post('/v1/devices', json=again,
                      headers=auth(secret)).status_code == 200
-    row = db.fetch('SELECT apns_token, push_to_start_token FROM push.devices')[0]
+    row = db.fetch(
+        'SELECT apns_token, push_to_start_token FROM push.devices')[0]
     assert tuple(row) == (APNS, 'ef' * 32)
 
 

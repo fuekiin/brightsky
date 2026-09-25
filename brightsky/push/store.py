@@ -112,10 +112,12 @@ async def register(conn, device, bearer, now):
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             ON CONFLICT (id) DO UPDATE SET
               secret_hash = excluded.secret_hash,
-              -- A registration without a token keeps the stored one: the app
-              -- registers at launch before iOS has handed its tokens out again.
-              -- A dead token is cleared by the sender (forget_token), not here.
-              apns_token = COALESCE(excluded.apns_token, push.devices.apns_token),
+              -- A registration without a token keeps the stored one: the
+              -- app registers at launch before iOS hands its tokens out
+              -- again. A dead token is cleared by the sender
+              -- (forget_token), not here.
+              apns_token = COALESCE(excluded.apns_token,
+                                    push.devices.apns_token),
               push_to_start_token = COALESCE(excluded.push_to_start_token,
                                              push.devices.push_to_start_token),
               live_activities_enabled = excluded.live_activities_enabled,
