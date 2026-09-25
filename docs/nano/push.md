@@ -132,6 +132,10 @@ switches register as ordinary `dwd_warning` / `rain_nowcast` rules (warnings: `n
 - **Notice gates** — the same day opens at 07:00, the day before and two days before at
   18:00 that evening; `today` behaves as the same day, `tomorrow` as the day before. This
   replaces the missing gate that let a „morgen" rule arrive at 01:23 in the device test.
+- **Digest rules: the digest time is the gate** (2026-09-25). For a rule delivered in the
+  Morgenübersicht the notice gate opens at 07:00 on the notice day instead of 18:00 the evening
+  before — otherwise a „morgen" rule could never be seen at 07:00. „morgen" reports in today's
+  digest, a weekend „am Vortag" in Friday's, „heute" unchanged; each occasion still once.
 - **No quiet hours** — decided 2026-09-24 („maybe later"): forecast rules decide at any hour.
   The notice gates above are not quiet hours; they say when an occasion may first report.
 - **Catalogue** — copied again (version 2, app `172912b`): the warning and rain presets are gone

@@ -557,12 +557,13 @@ class Worker:
                              if rule.values else [])
                     if rule.kind == 'user_rule':
                         decision = firing.decide_values(
-                            rule, ev.value_matches(rule, hours, now), prior,
+                            rule, ev.value_matches(rule, hours, now,
+                                                   digest=True), prior,
                             now)
                     elif rule.kind == 'dwd_warning':
                         matches = ev.warning_matches(
                             rule, obs.lookup(row['warn_cell_id']), hours,
-                            now)
+                            now, digest=True)
                         decision = firing.decide_warnings(rule, matches,
                                                           prior, now)
                     else:

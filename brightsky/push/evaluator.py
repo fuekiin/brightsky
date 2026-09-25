@@ -326,7 +326,17 @@ def notice_opens_hour(days_before):
     return 7 if days_before == 0 else 18
 
 
-def occurrences(window, now):
+# The Morgenübersicht goes out at 07:00; for digest rules that time is the
+# gate on the notice day (decision 2026-09-25).
+DIGEST_OPENS_HOUR = 7
+
+
+def occurrences(window, now, digest=False):
+    """`digest`: the rule is delivered in the 07:00 Morgenübersicht. The
+    notice gate then opens at the digest time on the notice day instead of
+    18:00 the evening before — otherwise a „morgen" rule, gated at 18:00,
+    could never be seen at 07:00, and a weekend „am Vortag" reports in
+    Friday's digest."""
     if window.days == 'nextHours':
         return [Occurrence(None, (
             Span(None, now, now + window.hours * HOUR),))]
@@ -357,8 +367,9 @@ def occurrences(window, now):
     for occasion in _occasions(window, dates):
         first = occasion[0]
         if notice is not None:
-            opens = berlin.at_hour(first - notice * day, notice_opens_hour(
-                notice))
+            opens = berlin.at_hour(
+                first - notice * day,
+                DIGEST_OPENS_HOUR if digest else notice_opens_hour(notice))
             if now < opens:
                 continue
         spans = []
@@ -452,7 +463,7 @@ def occurrence_key(window, occ):
     return occ.key.isoformat()
 
 
-def value_matches(rule, hours, now):
+def value_matches(rule, hours, now, digest=False):
     """Every occurrence of a value rule that passes, first first.
 
     The app's tab shows only the first (`RuleEvaluator.valueMatch`); the
@@ -460,7 +471,7 @@ def value_matches(rule, hours, now):
     rolling window the first passing one is the match.
     """
     out = []
-    for occ in occurrences(rule.window, now):
+    for occ in occurrences(rule.window, now, digest=digest):
         passed = []
         for span in occ.spans:
             hs = [h for h in hours
@@ -500,12 +511,13 @@ def warning_onset_phrase(w, now):
     return 'jetzt' if w.onset <= now else f'ab {day_clock(w.onset, now)}'
 
 
-def warning_matches(rule, warnings, hours, now):
+def warning_matches(rule, warnings, hours, now, digest=False):
     """`RuleEvaluator.warningMatches`: level, family, window overlap, and
     the value conditions over the warning's own hours (rules design §3: a
     value that becomes true during a running warning fires then)."""
     cond = rule.warning
-    spans = [s for occ in occurrences(rule.window, now) for s in occ.spans]
+    spans = [s for occ in occurrences(rule.window, now, digest=digest)
+             for s in occ.spans]
     out = []
     for w in warnings:
         if w.level < cond.min_level:

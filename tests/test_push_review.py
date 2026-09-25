@@ -1531,3 +1531,86 @@ def test_hamburg_told_does_not_suppress_muenchen(push_db, monkeypatch):
                                push_to_start=None), stub, monkeypatch)
     run(push_db, ntick(NOW + 5 * M), stub, monkeypatch)
     assert [n['ruleId'] for n in nano_of(stub)] == [RAIN_RULE, muc]
+
+
+# MARK: - Digest: the digest time is the gate (2026-09-25)
+
+DIGEST = {'at': '07:00', 'tz': 'Europe/Berlin'}
+DRULE = '00000000-0000-0000-0000-0000000000d7'
+
+
+def digest_rule(window, metric='cloud', value=15):
+    return {'id': DRULE, 'kind': 'user_rule', 'cellKey': CELL,
+            'schedule': DIGEST,
+            'params': {'all': [{'metric': metric, 'cmp': 'gt',
+                                'value': value}], 'window': window}}
+
+
+def run_digest(push_db, monkeypatch, stub, hours, day):
+    async def fake_fetch(self, cell_key, lat, lon, now):
+        self.hours[cell_key] = hours
+        self.fetched_at[cell_key] = now
+        return hours
+    monkeypatch.setattr(sources.ForecastSource, 'fetch', fake_fetch)
+    at = datetime.datetime(2026, 9, day, 7, 5, tzinfo=berlin.TZ)
+
+    async def dtick(worker, pool):
+        return await worker.digest_tick(at)
+    run(push_db, dtick, stub, monkeypatch)
+
+
+def cloudy(day, pct=40):
+    return [ev.Hour(datetime.datetime(2026, 9, day, h, tzinfo=berlin.TZ),
+                    cloud_cover=pct) for h in range(0, 24)]
+
+
+def test_tomorrow_rule_in_the_digest_reports_at_seven(push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register([digest_rule({'days': 'tomorrow',
+                                        'part': 'allDay'})]), stub,
+        monkeypatch)
+    run_digest(push_db, monkeypatch, stub, cloudy(26), day=25)   # Fri 07:05
+    [nano] = nano_of(stub)
+    assert nano['kind'] == 'digest'
+    assert nano['items'][0]['evidence']['day'] == 'morgen'
+    assert nano['items'][0]['occurrence'].endswith('2026-09-26')
+    # next morning: the same occasion (now „heute") is not reported again
+    run_digest(push_db, monkeypatch, stub, cloudy(26), day=26)
+    assert len(nano_of(stub)) == 1
+
+
+def test_today_rule_in_the_digest_is_unchanged(push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register([digest_rule({'days': 'today',
+                                        'part': 'allDay'})]), stub,
+        monkeypatch)
+    run_digest(push_db, monkeypatch, stub, cloudy(25), day=25)
+    [nano] = nano_of(stub)
+    assert nano['items'][0]['evidence']['day'] == 'heute'
+
+
+def test_weekend_day_before_in_the_digest_reports_friday(push_db,
+                                                         monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register([digest_rule(
+        {'days': 'weekdays', 'weekdays': [6, 7], 'notice': 'dayBefore',
+         'together': True, 'part': 'allDay'})]), stub, monkeypatch)
+    weekend = cloudy(26) + cloudy(27)
+    run_digest(push_db, monkeypatch, stub, weekend, day=23)      # Wed
+    assert nano_of(stub) == []
+    run_digest(push_db, monkeypatch, stub, weekend, day=25)      # Fri
+    [nano] = nano_of(stub)
+    assert nano['items'][0]['occurrence'].endswith('2026-09-26')
+    run_digest(push_db, monkeypatch, stub, weekend, day=26)      # Sat
+    assert len(nano_of(stub)) == 1                               # once
+
+
+def test_digest_gate_does_not_change_immediate_rules():
+    r = parse_rule({'id': DRULE, 'kind': 'user_rule', 'cellKey': CELL,
+                    'params': {'all': [{'metric': 'cloud', 'cmp': 'gt',
+                                        'value': 15}],
+                               'window': {'days': 'tomorrow',
+                                          'part': 'allDay'}}})
+    seven = datetime.datetime(2026, 9, 25, 7, 5, tzinfo=berlin.TZ)
+    assert ev.value_matches(r, cloudy(26), seven) == []          # 18:00 gate
+    assert ev.value_matches(r, cloudy(26), seven, digest=True)
