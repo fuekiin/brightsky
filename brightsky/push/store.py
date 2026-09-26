@@ -182,10 +182,20 @@ async def register(conn, device, bearer, now):
             if not rulemod.is_expired(rule.window, now):
                 keep.append((rule, raw))
 
-        await conn.execute(
-            'DELETE FROM push.rules '
-            'WHERE device_id = $1 AND NOT (id = ANY($2::uuid[]))',
-            device['deviceId'], [r.id for r, _ in keep])
+        # A rule missing from the set is disabled, not deleted: it keeps its
+        # state for DISABLED_RETENTION, so a registration that briefly lacks
+        # it (an app launch race) cannot make it report again. Its Live
+        # Activity is detached as if it had been deleted.
+        disabled = await conn.fetch(
+            'UPDATE push.rules SET enabled = false, disabled_at = $3 '
+            'WHERE device_id = $1 AND NOT (id = ANY($2::uuid[])) '
+            'AND enabled RETURNING id',
+            device['deviceId'], [r.id for r, _ in keep], now)
+        if disabled:
+            await conn.execute(
+                'UPDATE push.live_activities SET rule_id = NULL '
+                'WHERE rule_id = ANY($1::uuid[])',
+                [r['id'] for r in disabled])
         for position, (rule, raw) in enumerate(keep):
             lat, lon = rule.lat_lon
             await conn.execute(
@@ -208,7 +218,8 @@ async def register(conn, device, bearer, now):
                   schedule = excluded.schedule,
                   live = excluded.live,
                   position = excluded.position,
-                  enabled = true
+                  enabled = true,
+                  disabled_at = NULL
                 """,
                 rule.id, device['deviceId'], rule.kind, rule.cell_key,
                 rule.raw_params, rule.schedule, rule.live, position)

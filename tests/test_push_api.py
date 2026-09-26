@@ -74,7 +74,8 @@ def test_authenticated_update_replaces_rule_set(push, db):
     resp = push.post('/v1/devices', json=d, headers=auth(secret))
     assert resp.status_code == 200
     assert 'deviceSecret' not in resp.json()
-    ids = [str(x[0]) for x in db.fetch('SELECT id FROM push.rules')]
+    ids = [str(x[0]) for x in db.fetch(
+        'SELECT id FROM push.rules WHERE enabled')]
     assert ids == [b['id'].lower()]
 
 

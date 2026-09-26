@@ -174,6 +174,22 @@ area while at home; both `dwd_warning` registrations match the same DWD warning.
   then the broader threshold, then the lower rule id (`firing.dedupe_rain`, `rain_areas`).
 - User rules are untouched: they are distinct rules.
 
+## Missing rules are disabled, not deleted (2026-09-27)
+
+On 2026-09-26 an app launch race registered a device without its own rules for about 20
+minutes. The server deleted them, their `rule_state` went with them, and when they came back
+a forecast rule reported the same weekend a second time („Grillwetter", Fri 18:07 and again
+Sat 10:22).
+
+A rule missing from a registration is now disabled (`enabled = false`, `disabled_at`,
+migration 0023) and keeps its state. The loops only evaluate enabled rules; a running Live
+Activity of a disabled rule is detached (`rule_id = NULL`) and ends quietly, as for a deleted
+rule. When the rule comes back unchanged it is enabled again and does not report an occasion
+it already reported; when its kind or params changed it re-arms as before. `cleanup_tick`
+deletes rules disabled for more than 7 days (`DISABLED_RETENTION`). `DELETE /v1/devices` still
+deletes everything at once. The app fixes the race itself as well (branch
+`fix/registration-launch-race`), but old builds keep flapping until they update.
+
 ## Load on `web` (2026-09-24)
 
 Measured against production over 7 days (Traefik via Prometheus): 3 req/s at night, 23–31 by

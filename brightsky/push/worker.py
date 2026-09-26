@@ -28,6 +28,7 @@ FORECAST_PACE = 0.8
 FORECAST_MAX_SPACING = 1.0
 AUDIT_RETENTION = datetime.timedelta(days=30)
 DEVICE_RETENTION = datetime.timedelta(days=90)
+DISABLED_RETENTION = datetime.timedelta(days=7)
 
 
 def utcnow():
@@ -605,6 +606,12 @@ class Worker:
             await conn.execute(
                 'DELETE FROM push.devices WHERE last_seen < $1',
                 now - DEVICE_RETENTION)
+            # Rules the app stopped sending a week ago are gone for good;
+            # their state cascades.
+            await conn.execute(
+                'DELETE FROM push.rules '
+                'WHERE NOT enabled AND disabled_at < $1',
+                now - DISABLED_RETENTION)
             # Locks of devices that are not in the middle of a decision
             for key in [k for k, v in livectl.LOCKS.items()
                         if not v.locked()]:
