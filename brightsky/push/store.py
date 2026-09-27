@@ -1,6 +1,7 @@
 """Database access for schema `push` (asyncpg)."""
 
 import contextlib
+import datetime
 import hashlib
 import re
 import json
@@ -69,6 +70,19 @@ async def device_exists(conn, device_id):
         'SELECT true FROM push.devices WHERE id = $1', device_id) or False
 
 
+# A rule the app stops sending is disabled, not deleted: it keeps its state,
+# so a registration that briefly lacks it (an app launch race, 2026-09-26)
+# cannot make it report the same occasion again. `worker.cleanup_tick`
+# deletes it after `DISABLED_RETENTION`.
+#
+# Back after longer than this, its running events re-arm: whether rain
+# stopped or a rolling window turned false meanwhile was not watched.
+REARM_AFTER = datetime.timedelta(hours=6)
+RUNNING_EVENTS = ['rain', 'rolling']
+# Disabled rules kept per device; beyond, the oldest go at once.
+MAX_DISABLED_PER_DEVICE = settings.PUSH_MAX_RULES_PER_DEVICE
+
+
 async def register(conn, device, bearer, now):
     """Upsert the device and replace its rule set.
 
@@ -80,159 +94,224 @@ async def register(conn, device, bearer, now):
     bearer on an unknown id → adopt it (the server lost the device);
     bearer on a known id must match, otherwise AuthError (401).
     """
+    device_id = device['deviceId']
     async with conn.transaction():
-        row = await conn.fetchrow(
-            'SELECT secret_hash FROM push.devices WHERE id = $1 FOR UPDATE',
-            device['deviceId'])
-        new_secret_value = None
-        if bearer is None:
-            new_secret_value = new_secret()
-            secret_hash = hash_secret(new_secret_value)
-            event = 'created' if row is None else 'taken_over'
-        elif row is None:
-            # Adopting is only for secrets this server once issued (256
-            # random bits); anything shorter is refused, and the app's
-            # retry without it registers afresh.
-            if len(bearer) < MIN_ADOPT_SECRET:
-                raise AuthError()
-            secret_hash = hash_secret(bearer)
-            event = 'adopted'
-        elif secret_matches(bearer, row['secret_hash']):
-            secret_hash = row['secret_hash']
-            event = 'updated'
-        else:
-            raise AuthError()
-
+        new_secret_value, secret_hash, event = await _authorize(
+            conn, device_id, bearer)
+        await _upsert_device(conn, device, secret_hash, now)
+        parsed, rejected = _parse_rules(device['rules'])
+        keep, accepted, refused = await _admit(conn, device_id, parsed, now)
+        rejected += refused
+        keep_ids = [r.id for r in keep]
+        await _retire_missing(conn, device_id, keep_ids, now)
+        # Rules another device dropped move here, without their state.
         await conn.execute(
-            """
-            INSERT INTO push.devices (
-              id, secret_hash, apns_token, push_to_start_token,
-              live_activities_enabled, environment, tier, app_version,
-              last_seen)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            ON CONFLICT (id) DO UPDATE SET
-              secret_hash = excluded.secret_hash,
-              -- A registration without a token keeps the stored one: the
-              -- app registers at launch before iOS hands its tokens out
-              -- again. A dead token is cleared by the sender
-              -- (forget_token), not here.
-              apns_token = COALESCE(excluded.apns_token,
-                                    push.devices.apns_token),
-              push_to_start_token = COALESCE(excluded.push_to_start_token,
-                                             push.devices.push_to_start_token),
-              live_activities_enabled = excluded.live_activities_enabled,
-              environment = excluded.environment,
-              tier = excluded.tier,
-              app_version = excluded.app_version,
-              last_seen = excluded.last_seen
-            """,
-            device['deviceId'], secret_hash, device.get('apnsToken'),
-            device.get('pushToStartToken'),
-            device.get('liveActivitiesEnabled', True),
-            device['environment'], device.get('tier') or 'free',
-            device.get('appVersion'), now)
-
-        accepted, rejected, parsed = [], [], []
-        seen = set()
-        for raw in device['rules']:
-            rule_id = _rule_id(raw)
-            if rule_id is None:
-                continue
-            if rule_id in seen:
-                rejected.append((rule_id, 'duplicate_id'))
-                continue
-            seen.add(rule_id)
-            try:
-                rule = rulemod.parse_rule({**raw, 'id': rule_id})
-            except rulemod.Rejected as e:
-                rejected.append((rule_id, e.reason))
-                continue
-            if len(parsed) >= settings.PUSH_MAX_RULES_PER_DEVICE:
-                rejected.append((rule_id, 'device_limit'))
-                continue
-            parsed.append((rule, raw))
-
-        # A rule id belongs to the device that registered it first.
-        foreign = {
-            str(r['id']) for r in await conn.fetch(
-                'SELECT id FROM push.rules '
-                'WHERE id = ANY($1::uuid[]) AND device_id <> $2',
-                [r.id for r, _ in parsed], device['deviceId'])
-        }
-        known_cells = {r['cell_key'] for r in await conn.fetch(
-            'SELECT cell_key FROM push.cells WHERE cell_key = ANY($1)',
-            list({r.cell_key for r, _ in parsed}))}
-        free_cells = settings.PUSH_MAX_CELLS - await conn.fetchval(
-            'SELECT count(*) FROM push.cells')
-        keep = []
-        for rule, raw in parsed:
-            if rule.id in foreign:
-                rejected.append((rule.id, 'duplicate_id'))
-                continue
-            if rule.cell_key not in known_cells:
-                # A global ceiling on distinct cells: upstream load scales
-                # with cells, not users (design §2).
-                if free_cells <= 0:
-                    rejected.append((rule.id, 'capacity'))
-                    continue
-                free_cells -= 1
-                known_cells.add(rule.cell_key)
-            accepted.append(rule.id)
-            # A once-window that is over is accepted and dropped (§6).
-            if not rulemod.is_expired(rule.window, now):
-                keep.append((rule, raw))
-
-        # A rule missing from the set is disabled, not deleted: it keeps its
-        # state for DISABLED_RETENTION, so a registration that briefly lacks
-        # it (an app launch race) cannot make it report again. Its Live
-        # Activity is detached as if it had been deleted.
-        disabled = await conn.fetch(
-            'UPDATE push.rules SET enabled = false, disabled_at = $3 '
-            'WHERE device_id = $1 AND NOT (id = ANY($2::uuid[])) '
-            'AND enabled RETURNING id',
-            device['deviceId'], [r.id for r, _ in keep], now)
-        if disabled:
-            await conn.execute(
-                'UPDATE push.live_activities SET rule_id = NULL '
-                'WHERE rule_id = ANY($1::uuid[])',
-                [r['id'] for r in disabled])
-        for position, (rule, raw) in enumerate(keep):
-            lat, lon = rule.lat_lon
-            await conn.execute(
-                'INSERT INTO push.cells (cell_key, lat, lon) '
-                'VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
-                rule.cell_key, lat, lon)
-            previous = await conn.fetchrow(
-                'SELECT kind, params FROM push.rules WHERE id = $1',
-                rule.id)
-            await conn.execute(
-                """
-                INSERT INTO push.rules (
-                  id, device_id, kind, cell_key, params, schedule, live,
-                  position)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                ON CONFLICT (id) DO UPDATE SET
-                  kind = excluded.kind,
-                  cell_key = excluded.cell_key,
-                  params = excluded.params,
-                  schedule = excluded.schedule,
-                  live = excluded.live,
-                  position = excluded.position,
-                  enabled = true,
-                  disabled_at = NULL
-                """,
-                rule.id, device['deviceId'], rule.kind, rule.cell_key,
-                rule.raw_params, rule.schedule, rule.live, position)
-            # An edited rule is a new rule: it re-arms (rules design §3).
-            # A new cell is not an edit — rules at „Mein Standort" move with
-            # the phone and must not report again in every cell.
-            if previous is not None and (
-                    previous['kind'], _semantic(previous['params'])) != (
-                    rule.kind, _semantic(rule.raw_params)):
-                await conn.execute(
-                    'DELETE FROM push.rule_state WHERE rule_id = $1',
-                    rule.id)
+            'DELETE FROM push.rules '
+            'WHERE id = ANY($1::uuid[]) AND device_id <> $2 AND NOT enabled',
+            keep_ids, device_id)
+        for position, rule in enumerate(keep):
+            await _upsert_rule(conn, device_id, rule, position, now)
     return accepted, rejected, new_secret_value, event
+
+
+async def _authorize(conn, device_id, bearer):
+    """→ (new secret or None, secret hash to store, event)."""
+    row = await conn.fetchrow(
+        'SELECT secret_hash FROM push.devices WHERE id = $1 FOR UPDATE',
+        device_id)
+    if bearer is None:
+        secret = new_secret()
+        return (secret, hash_secret(secret),
+                'created' if row is None else 'taken_over')
+    if row is None:
+        # Adopting is only for secrets this server once issued (256 random
+        # bits); anything shorter is refused, and the app's retry without
+        # it registers afresh.
+        if len(bearer) < MIN_ADOPT_SECRET:
+            raise AuthError()
+        return None, hash_secret(bearer), 'adopted'
+    if secret_matches(bearer, row['secret_hash']):
+        return None, row['secret_hash'], 'updated'
+    raise AuthError()
+
+
+async def _upsert_device(conn, device, secret_hash, now):
+    await conn.execute(
+        """
+        INSERT INTO push.devices (
+          id, secret_hash, apns_token, push_to_start_token,
+          live_activities_enabled, environment, tier, app_version,
+          last_seen)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (id) DO UPDATE SET
+          secret_hash = excluded.secret_hash,
+          -- A registration without a token keeps the stored one: the app
+          -- registers at launch before iOS hands its tokens out again. A
+          -- dead token is cleared by the sender (forget_token), not here.
+          -- Not across environments: a sandbox token is dead in
+          -- production (a tester moving from a dev build to TestFlight).
+          apns_token = CASE
+            WHEN excluded.environment = push.devices.environment
+            THEN COALESCE(excluded.apns_token, push.devices.apns_token)
+            ELSE excluded.apns_token END,
+          push_to_start_token = CASE
+            WHEN excluded.environment = push.devices.environment
+            THEN COALESCE(excluded.push_to_start_token,
+                          push.devices.push_to_start_token)
+            ELSE excluded.push_to_start_token END,
+          live_activities_enabled = excluded.live_activities_enabled,
+          environment = excluded.environment,
+          tier = excluded.tier,
+          app_version = excluded.app_version,
+          last_seen = excluded.last_seen
+        """,
+        device['deviceId'], secret_hash, device.get('apnsToken'),
+        device.get('pushToStartToken'),
+        device.get('liveActivitiesEnabled', True),
+        device['environment'], device.get('tier') or 'free',
+        device.get('appVersion'), now)
+
+
+def _parse_rules(raws):
+    """→ ([Rule], [(rule id, reason)]), in the order the app sent them."""
+    parsed, rejected, seen = [], [], set()
+    for raw in raws:
+        rule_id = _rule_id(raw)
+        if rule_id is None:
+            continue
+        if rule_id in seen:
+            rejected.append((rule_id, 'duplicate_id'))
+            continue
+        seen.add(rule_id)
+        try:
+            rule = rulemod.parse_rule({**raw, 'id': rule_id})
+        except rulemod.Rejected as e:
+            rejected.append((rule_id, e.reason))
+            continue
+        if len(parsed) >= settings.PUSH_MAX_RULES_PER_DEVICE:
+            rejected.append((rule_id, 'device_limit'))
+            continue
+        parsed.append(rule)
+    return parsed, rejected
+
+
+async def _admit(conn, device_id, parsed, now):
+    """The rules this registration may keep → (rules to store, accepted
+    ids, rejections)."""
+    # A rule id belongs to the device that registered it first, while that
+    # device still has it; one it dropped (disabled) may move.
+    foreign = {str(r['id']) for r in await conn.fetch(
+        'SELECT id FROM push.rules '
+        'WHERE id = ANY($1::uuid[]) AND device_id <> $2 AND enabled',
+        [r.id for r in parsed], device_id)}
+    # A global ceiling on distinct cells: upstream load scales with cells,
+    # not users (design §2). It counts the cells in use after this
+    # registration — the other devices' enabled rules plus this set — so a
+    # disabled rule holds no place, and neither does one this set replaces.
+    # A cell the device already uses never costs: nobody loses a place.
+    cells = list({r.cell_key for r in parsed})
+    others = {r['cell_key'] for r in await conn.fetch(
+        'SELECT DISTINCT cell_key FROM push.rules '
+        'WHERE enabled AND device_id <> $2 AND cell_key = ANY($1)',
+        cells, device_id)}
+    own = {r['cell_key'] for r in await conn.fetch(
+        'SELECT DISTINCT cell_key FROM push.rules '
+        'WHERE enabled AND device_id = $1', device_id)}
+    in_use = others | (own & set(cells))
+    # Every cell in use has a row, so the rows bound the count from above:
+    # the exact count (tens of ms at 200k rules) only near the ceiling.
+    free_cells = settings.PUSH_MAX_CELLS - await conn.fetchval(
+        'SELECT count(*) FROM push.cells')
+    if free_cells < len(cells):
+        free_cells = settings.PUSH_MAX_CELLS - len(in_use - others) - (
+            await conn.fetchval(
+                'SELECT count(DISTINCT cell_key) FROM push.rules '
+                'WHERE enabled AND device_id <> $1', device_id))
+    keep, accepted, rejected = [], [], []
+    for rule in parsed:
+        if rule.id in foreign:
+            rejected.append((rule.id, 'duplicate_id'))
+            continue
+        if rule.cell_key not in in_use:
+            if free_cells <= 0:
+                rejected.append((rule.id, 'capacity'))
+                continue
+            free_cells -= 1
+            in_use.add(rule.cell_key)
+        accepted.append(rule.id)
+        # A once-window that is over is accepted and dropped (§6).
+        if not rulemod.is_expired(rule.window, now):
+            keep.append(rule)
+    return keep, accepted, rejected
+
+
+async def _retire_missing(conn, device_id, keep_ids, now):
+    """Disable the device's rules that are not in `keep_ids`."""
+    missing = 'device_id = $1 AND NOT (id = ANY($2::uuid[]))'
+    # Nothing to remember — no state, no running activity: gone at once,
+    # so re-registering is no way to pile up rows.
+    await conn.execute(
+        f"""
+        DELETE FROM push.rules r WHERE {missing}
+          AND NOT EXISTS (SELECT 1 FROM push.rule_state s
+                          WHERE s.rule_id = r.id)
+          AND NOT EXISTS (SELECT 1 FROM push.live_activities la
+                          WHERE la.rule_id = r.id AND la.ended_at IS NULL)
+        """, device_id, keep_ids)
+    await conn.execute(
+        f'UPDATE push.rules SET enabled = false, disabled_at = $3 '
+        f'WHERE {missing} AND enabled', device_id, keep_ids, now)
+    await conn.execute(
+        """
+        DELETE FROM push.rules WHERE id IN (
+          SELECT id FROM push.rules WHERE device_id = $1 AND NOT enabled
+          ORDER BY disabled_at DESC, id OFFSET $2)
+        """, device_id, MAX_DISABLED_PER_DEVICE)
+
+
+async def _upsert_rule(conn, device_id, rule, position, now):
+    lat, lon = rule.lat_lon
+    await conn.execute(
+        'INSERT INTO push.cells (cell_key, lat, lon) '
+        'VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+        rule.cell_key, lat, lon)
+    previous = await conn.fetchrow(
+        'SELECT kind, params, enabled, disabled_at FROM push.rules '
+        'WHERE id = $1 AND device_id = $2', rule.id, device_id)
+    await conn.execute(
+        """
+        INSERT INTO push.rules (
+          id, device_id, kind, cell_key, params, schedule, live, position)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (id) DO UPDATE SET
+          kind = excluded.kind,
+          cell_key = excluded.cell_key,
+          params = excluded.params,
+          schedule = excluded.schedule,
+          live = excluded.live,
+          position = excluded.position,
+          enabled = true,
+          disabled_at = NULL
+        -- Never another device's rule (a concurrent registration took it)
+        WHERE push.rules.device_id = excluded.device_id
+        """,
+        rule.id, device_id, rule.kind, rule.cell_key, rule.raw_params,
+        rule.schedule, rule.live, position)
+    if previous is None:
+        return
+    # An edited rule is a new rule: it re-arms (rules design §3). A new
+    # cell is not an edit — rules at „Mein Standort" move with the phone
+    # and must not report again in every cell.
+    if (previous['kind'], _semantic(previous['params'])) != (
+            rule.kind, _semantic(rule.raw_params)):
+        await conn.execute(
+            'DELETE FROM push.rule_state WHERE rule_id = $1', rule.id)
+    elif (not previous['enabled'] and previous['disabled_at'] is not None
+            and now - previous['disabled_at'] >= REARM_AFTER):
+        await conn.execute(
+            'DELETE FROM push.rule_state '
+            'WHERE rule_id = $1 AND occurrence_key = ANY($2)',
+            rule.id, RUNNING_EVENTS)
 
 
 def _semantic(params):

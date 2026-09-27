@@ -60,7 +60,17 @@ class WarningsSource:
             {newest['url']: row}, newest)
 
     async def refresh(self, conn, now):
-        if await self.in_sync(conn):
+        try:
+            synced = await self.in_sync(conn)
+        except Exception as e:
+            # One failed look at the listing is not staleness yet: the
+            # snapshot stays usable for WARNINGS_MAX_AGE after the last
+            # match, and after that Stale says so (the digest then goes
+            # without warnings).
+            logger.warning('DWD listing check failed: %s: %s',
+                           type(e).__name__, e)
+            synced = False
+        if synced:
             self.synced_at = now
         if self.synced_at is None or now - self.synced_at > WARNINGS_MAX_AGE:
             raise Stale(

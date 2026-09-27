@@ -26,6 +26,9 @@ CELL_RESOLVE_ERROR_RETRY = datetime.timedelta(minutes=10)
 NOWCAST_CHECK_S = 60
 FORECAST_PACE = 0.8
 FORECAST_MAX_SPACING = 1.0
+# The digest spreads its forecast requests over this many seconds: at 07:00
+# every digest cell meets the app's morning peak on `web`.
+DIGEST_SPREAD_S = 300
 AUDIT_RETENTION = datetime.timedelta(days=30)
 DEVICE_RETENTION = datetime.timedelta(days=90)
 DISABLED_RETENTION = datetime.timedelta(days=7)
@@ -99,14 +102,20 @@ def device_of(row):
             'live_activities_enabled': row['live_activities_enabled']}
 
 
+# A running activity whose rule is disabled (missing from the device's last
+# registration) is as gone as one whose rule was deleted: rule_id, cell_key
+# and rule_params are NULL.
 RUNNING_SQL = """
-    SELECT la.*, c.warn_cell_id, c.lat, c.lon, r.cell_key,
-           r.params AS rule_params,
+    SELECT la.device_id, la.activity_id, la.phase, la.activity_token,
+           la.started_at, la.last_update_at, la.last_content, la.state,
+           la.ended_at, la.cooldown_until,
+           r.id AS rule_id, r.cell_key, r.params AS rule_params,
+           c.warn_cell_id, c.lat, c.lon,
            d.id AS d_id, d.apns_token, d.environment,
            d.push_to_start_token, d.live_activities_enabled
     FROM push.live_activities la
     JOIN push.devices d ON d.id = la.device_id
-    LEFT JOIN push.rules r ON r.id = la.rule_id
+    LEFT JOIN push.rules r ON r.id = la.rule_id AND r.enabled
     LEFT JOIN push.cells c ON c.cell_key = r.cell_key
     WHERE la.ended_at IS NULL AND la.phase = $1
 """
@@ -165,7 +174,7 @@ async def running_threads(conn, rows):
 def warning_status(row, alert_ids, obs):
     """What became of a running warning activity's warning (review #5):
 
-    - 'gone': its rule was deleted;
+    - 'gone': its rule was deleted or disabled;
     - 'cancelled': none of its thread's alerts is in DWD's snapshot any
       more, anywhere — DWD withdrew it;
     - 'elsewhere': it still exists, but not at the rule's current warn
@@ -270,8 +279,11 @@ class Worker:
         async with self.pool.acquire() as conn:
             await self.resolve_cells(conn, now)
             obs = await self.warnings.refresh(conn, now)
-            rows = [r for r in await conn.fetch(RULES_SQL, 'dwd_warning')
-                    if obs.lookup(r['warn_cell_id'])]
+            # Only rules at a warn cell with warnings: nothing else can
+            # match or write state.
+            rows = await conn.fetch(
+                RULES_SQL + ' AND c.warn_cell_id = ANY($2::int[])',
+                'dwd_warning', list(obs.by_cell))
             states = await load_states(conn, [r['id'] for r in rows])
             decided = []
             candidates = {}
@@ -351,20 +363,22 @@ class Worker:
 
     # MARK: forecast
 
+    def forecast_fresh(self, cell_key, now):
+        fetched = self.forecast.fetched_at.get(cell_key)
+        return fetched is not None and now - fetched <= datetime.timedelta(
+            seconds=self.forecast.interval_s)
+
     async def hours_for(self, row, now):
-        hours = self.forecast.lookup(row['cell_key'])
-        fetched = self.forecast.fetched_at.get(row['cell_key'])
-        if hours is None or now - fetched > datetime.timedelta(
-                seconds=self.forecast.interval_s):
-            hours = await self.forecast.fetch(
-                row['cell_key'], row['lat'], row['lon'], now)
-        return hours
+        if self.forecast_fresh(row['cell_key'], now):
+            return self.forecast.lookup(row['cell_key'])
+        return await self.forecast.fetch(
+            row['cell_key'], row['lat'], row['lon'], now)
 
     async def forecast_tick(self, now):
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(RULES_SQL, 'user_rule')
         cells = {r['cell_key']: r for r in rows}
-        failed = []
+        failed = set()
         # One request at a time, spread over most of the cycle: `web` also
         # serves the app, and a burst of lookups is what starves it
         # (incident 2026-07-10). With few cells the spacing is capped, so a
@@ -377,7 +391,7 @@ class Worker:
                 await self.forecast.fetch(
                     row['cell_key'], row['lat'], row['lon'], now)
             except Exception as e:
-                failed.append(row['cell_key'])
+                failed.add(row['cell_key'])
                 logger.warning('Forecast for %s failed: %r',
                                row['cell_key'], e)
             await self.sleep(spacing)
@@ -539,44 +553,32 @@ class Worker:
                     # … then send the rest without the warning rules
                     logger.warning('Digest: warnings stale, sending '
                                    'without warning rules')
-            states = await load_states(conn, [r['id'] for r in rows])
-            # One national radar request for every rain rule in the digest
-            rain_cells = {r['cell_key']: (r['lat'], r['lon']) for r in rows
-                          if r['kind'] == 'rain_nowcast'}
-            radar = (await self.nowcast.fetch_all(rain_cells, now)
-                     if rain_cells else {})
+        parsed = []
+        for row in rows:
+            with isolated('digest rule', row['id']):
+                rule = rule_from_row(row)
+                if rulemod.is_expired(rule.window, now):
+                    continue
+                if rule.kind == 'dwd_warning' and obs is None:
+                    continue
+                parsed.append((rule, row))
+        # Outside the connection and paced, as the forecast loop.
+        failed = await self.digest_forecasts(
+            [row for rule, row in parsed if rule.values], now)
+        # One national radar request for every rain rule in the digest
+        rain_cells = {row['cell_key']: (row['lat'], row['lon'])
+                      for rule, row in parsed if rule.kind == 'rain_nowcast'}
+        radar = (await self.nowcast.fetch_all(rain_cells, now)
+                 if rain_cells else {})
+        async with self.pool.acquire() as conn:
+            states = await load_states(conn, [row['id'] for _, row in parsed])
             decided = []
-            for row in rows:
+            for rule, row in parsed:
+                if rule.values and row['cell_key'] in failed:
+                    continue
                 with isolated('digest rule', row['id']):
-                    rule = rule_from_row(row)
-                    if rulemod.is_expired(rule.window, now):
-                        continue
-                    if rule.kind == 'dwd_warning' and obs is None:
-                        continue
-                    prior = states.get(rule.id, {})
-                    hours = (await self.hours_for(row, now)
-                             if rule.values else [])
-                    if rule.kind == 'user_rule':
-                        decision = firing.decide_values(
-                            rule, ev.value_matches(rule, hours, now,
-                                                   digest=True), prior,
-                            now)
-                    elif rule.kind == 'dwd_warning':
-                        matches = ev.warning_matches(
-                            rule, obs.lookup(row['warn_cell_id']), hours,
-                            now, digest=True)
-                        decision = firing.decide_warnings(rule, matches,
-                                                          prior, now)
-                    else:
-                        rain = live.analyze_rain(
-                            radar.get(row['cell_key'], []), now,
-                            threshold=rule.rain_threshold)
-                        clear = rain is None or (
-                            rain.first_rain_at is None
-                            and rain.state != 'raining')
-                        decision = firing.decide_rain(
-                            rule, ev.rain_match(rule, rain, hours, now),
-                            prior, now, clear)
+                    decision = await self.digest_decision(
+                        rule, row, obs, radar, states.get(rule.id, {}), now)
                     decided.append((rule, row, decision))
             by_device = {}
             for rule, row, decision in decided:
@@ -591,6 +593,43 @@ class Worker:
                 await dispatcher.send_all(conn, self.client, outgoing, now)
             await store.mark_source(conn, 'digest', now)
         return len(rows)
+
+    async def digest_forecasts(self, rows, now):
+        """Fetch the forecasts the digest needs, one at a time, spread over
+        DIGEST_SPREAD_S. Returns the cells that failed."""
+        cells = {row['cell_key']: row for row in rows
+                 if not self.forecast_fresh(row['cell_key'], now)}
+        spacing = min(FORECAST_MAX_SPACING,
+                      DIGEST_SPREAD_S / max(1, len(cells)))
+        failed = set()
+        for row in cells.values():
+            try:
+                await self.forecast.fetch(
+                    row['cell_key'], row['lat'], row['lon'], now)
+            except Exception as e:
+                failed.add(row['cell_key'])
+                logger.warning('Digest: forecast for %s failed: %r',
+                               row['cell_key'], e)
+            await self.sleep(spacing)
+        return failed
+
+    async def digest_decision(self, rule, row, obs, radar, prior, now):
+        hours = await self.hours_for(row, now) if rule.values else []
+        if rule.kind == 'user_rule':
+            return firing.decide_values(
+                rule, ev.value_matches(rule, hours, now, digest=True),
+                prior, now)
+        if rule.kind == 'dwd_warning':
+            matches = ev.warning_matches(
+                rule, obs.lookup(row['warn_cell_id']), hours, now,
+                digest=True)
+            return firing.decide_warnings(rule, matches, prior, now)
+        rain = live.analyze_rain(radar.get(row['cell_key'], []), now,
+                                 threshold=rule.rain_threshold)
+        clear = rain is None or (rain.first_rain_at is None
+                                 and rain.state != 'raining')
+        return firing.decide_rain(
+            rule, ev.rain_match(rule, rain, hours, now), prior, now, clear)
 
     # MARK: housekeeping
 
@@ -612,10 +651,7 @@ class Worker:
                 'DELETE FROM push.rules '
                 'WHERE NOT enabled AND disabled_at < $1',
                 now - DISABLED_RETENTION)
-            # Locks of devices that are not in the middle of a decision
-            for key in [k for k, v in livectl.LOCKS.items()
-                        if not v.locked()]:
-                del livectl.LOCKS[key]
+            livectl.prune_locks()
             # Cells no rule refers to any more
             await conn.execute(
                 'DELETE FROM push.cells c WHERE NOT EXISTS ('

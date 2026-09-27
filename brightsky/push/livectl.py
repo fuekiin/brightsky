@@ -28,6 +28,15 @@ def lock(device_id):
     return LOCKS[str(device_id)]
 
 
+def prune_locks():
+    """Forget the locks of devices not in the middle of a decision. A lock
+    just released to a waiter reads unlocked until the waiter runs; it is
+    kept, or the waiter and the next caller would hold different locks."""
+    for key in [k for k, v in LOCKS.items()
+                if not v.locked() and not v._waiters]:
+        del LOCKS[key]
+
+
 def active(row):
     return (row is not None and row['ended_at'] is None
             and row['phase'] in ('rain', 'warning'))
@@ -263,7 +272,7 @@ async def update(conn, client, device, row, c, now, *, alert=False,
 
 
 async def end(conn, client, device, row, content, now, *, cooldown=True,
-              mark=None):
+              marks=None):
     rule_id = row['rule_id'] and str(row['rule_id'])
     state = dict(row['state'])
     payload = payloads.live_end(content, now=now,
@@ -272,13 +281,12 @@ async def end(conn, client, device, row, content, now, *, cooldown=True,
                 alert=False, now=now, rule_id=rule_id,
                 event_key=state.get('event'),
                 expiration=now + END_EXPIRATION)
-    if mark:
-        state[mark] = True
+    state.update(marks or {})
     await _save(conn, device['id'], rule_id=rule_id, phase=row['phase'],
                 content=content, state=state, now=now, ended=True,
                 cooldown_until=now + live.COOLDOWN if cooldown else None)
     logger.info('Device %s: ended %s activity (%s)', device['id'],
-                row['phase'], mark or 'done')
+                row['phase'], ', '.join(marks or ()) or 'done')
 
 
 # MARK: - Rain
@@ -321,15 +329,24 @@ async def rain_tick(conn, client, device, candidate, rain, running_cell,
             same_place = (candidate is not None
                           and candidate.cell_key == running_cell)
             rule_id = row['rule_id'] and str(row['rule_id'])
-            too_old = now - row['started_at'] >= live.MAX_RAIN_LIFETIME
-            if rule_id is None or running_cell is None or too_old:
-                # Its rule is gone, or it ran its 4 h (§17.3): end it, with
-                # whatever it shows now. Checked before „no data", so an
-                # orphaned row can never stay active.
+            # No cell: its rule was deleted or disabled (worker.RUNNING_SQL)
+            gone = rule_id is None or running_cell is None
+            # Both checked before „no data", so an orphaned row can never
+            # stay active; the end shows whatever it shows now.
+            if gone:
+                # The rule's return does not start it again with an alert
+                # during the cooldown: it may only have been missing from
+                # one registration. Other rules may start at once.
                 await end(conn, client, device, row,
                           dict(row['last_content']), now,
-                          cooldown=too_old and rule_id is not None)
-                return too_old and same_place
+                          cooldown=rule_id is not None,
+                          marks={'gone': rule_id} if rule_id else None)
+                return False
+            if now - row['started_at'] >= live.MAX_RAIN_LIFETIME:
+                # It ran its 4 h (§17.3)
+                await end(conn, client, device, row,
+                          dict(row['last_content']), now)
+                return same_place
             if rain is None:
                 return False    # no data: leave it alone, notify the rest
             if rain.state == 'ended':
@@ -357,7 +374,8 @@ async def rain_tick(conn, client, device, candidate, rain, running_cell,
         cooling = (row is not None and row['phase'] == 'rain'
                    and row['cooldown_until'] and now < row['cooldown_until']
                    and candidate.rain.peak_class
-                   <= row['state'].get('class', 0))
+                   <= row['state'].get('class', 0)
+                   and row['state'].get('gone') in (None, candidate.rule_id))
         if cooling:
             return True    # quiet on purpose: no notification either
         return await start_or_take_over(conn, client, device, row,
@@ -403,10 +421,15 @@ async def warning_tick(conn, client, device, candidate, status, now):
                           now, cooldown=False)
                 return False
             if not same and status in ('gone', 'elsewhere'):
-                # Its rule was deleted or moved away: the warning still
-                # stands, so no „aufgehoben" — end quietly.
+                # Its rule was deleted, disabled or moved away: the warning
+                # still stands, so no „aufgehoben" — end quietly. A rule
+                # that was only missing from one registration does not
+                # start it again (below).
+                rule_id = row['rule_id'] and str(row['rule_id'])
+                gone = status == 'gone' and rule_id
                 await end(conn, client, device, row,
-                          dict(row['last_content']), now, cooldown=False)
+                          dict(row['last_content']), now, cooldown=False,
+                          marks={'gone': rule_id} if gone else None)
                 return False
             if candidate is None:
                 return False
@@ -417,7 +440,7 @@ async def warning_tick(conn, client, device, candidate, status, now):
                     # cover the rest.
                     await end(conn, client, device, row,
                               dict(row['last_content']), now,
-                              cooldown=False, mark='lifetime')
+                              cooldown=False, marks={'lifetime': True})
                     return True
                 stage = live.warning_stage(candidate.warning, now)
                 escalated = candidate.level > s.get('level', 0)
@@ -437,11 +460,12 @@ async def warning_tick(conn, client, device, candidate, status, now):
                 return True
         if candidate is None:
             return False
-        # An event the user dismissed, or that ran its 8 hours, does not
-        # come back unless it escalates.
+        # An event the user dismissed, that ran its 8 hours, or whose rule
+        # went away and came back, does not come back unless it escalates.
         if (row is not None and row['ended_at'] is not None
                 and s.get('event') == candidate.event_key
-                and (s.get('dismissed') or s.get('lifetime'))
+                and (s.get('dismissed') or s.get('lifetime')
+                     or s.get('gone') == candidate.rule_id)
                 and candidate.level <= s.get('level', 0)):
             return True
         return await start_or_take_over(conn, client, device, row,
