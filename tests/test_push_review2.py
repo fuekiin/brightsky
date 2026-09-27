@@ -515,3 +515,19 @@ def test_8_the_rule_carrying_a_warning_activity_owns_it(
     assert events(stub) == ['start']
     assert [str(r[0]) for r in push_db.fetch(
         'SELECT rule_id FROM push.live_activities')] == [WARN_RULE_2]
+
+
+# MARK: - origin on user rules
+
+def test_adding_origin_to_a_rule_does_not_rearm_it(push_db, monkeypatch):
+    # The app starts sending params.origin on user rules: the first
+    # registration after the update must not re-arm every rule.
+    rule = warning_rule(WARN_RULE)
+    run(push_db, reg([rule]), StubAPNs(), monkeypatch)
+    add_state(push_db, WARN_RULE)
+    rule['params']['origin'] = 'saved'
+    run(push_db, reg([rule]), StubAPNs(), monkeypatch)
+    assert len(push_db.fetch('SELECT * FROM push.rule_state')) == 1
+    rule['params']['window'] = {'nextHours': 24}      # a real edit still does
+    run(push_db, reg([rule]), StubAPNs(), monkeypatch)
+    assert push_db.fetch('SELECT * FROM push.rule_state') == []

@@ -327,8 +327,13 @@ async def _upsert_rule(conn, device_id, rule, position, now):
     return True
 
 
+# Not what a rule asks for, so no edit: the app's own id, and where the rule
+# is registered from (the app started sending `origin` on user rules too).
+_NOT_SEMANTIC = {'ruleId', 'origin'}
+
+
 def _semantic(params):
-    return {k: v for k, v in params.items() if k != 'ruleId'}
+    return {k: v for k, v in params.items() if k not in _NOT_SEMANTIC}
 
 
 def _rule_id(raw):

@@ -207,6 +207,9 @@ builds keep flapping until they update.
   may only have been missing from one registration); one disabled longer holds none. The exact
   count runs only when the set's new cells may not fit: the `push.cells` row count bounds it
   from above.
+- **`origin` is not an edit** (2026-09-27). The app starts sending `params.origin`
+  (`current` / `saved`) on user rules too; like `ruleId` it is ignored when deciding whether a
+  rule was edited, so the first registration after that app update re-arms nothing.
 - **A dropped rule id may move.** A rule id disabled on one device may be registered by
   another (its state is dropped); one enabled elsewhere is still `duplicate_id`, also when both
   devices register it at the same moment (the upsert never touches another device's row).
