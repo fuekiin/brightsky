@@ -439,3 +439,61 @@ def test_digest_once_a_morning(push_db, monkeypatch):
         return await worker.forecast_tick(b(7, 10))
     run(push_db, ftick, stub, monkeypatch)
     assert len(stub.requests) == 1
+
+
+# MARK: - Missing rules are disabled, not deleted
+
+def test_a_rule_missing_from_one_registration_does_not_report_again(
+        push_db, monkeypatch):
+    # 2026-09-26: an app launch race registered the device without its
+    # rules for 20 minutes; deleting them dropped their state, and the
+    # returning rule reported the same occasion a second time.
+    stub = StubAPNs()
+    run(push_db, register([warning_rule(WARN_RULE)]), stub, monkeypatch)
+    add_alert(push_db, 'A', 'moderate')
+    run(push_db, tick(NOW), stub, monkeypatch)
+    assert len(stub.requests) == 1
+    run(push_db, register([]), stub, monkeypatch)
+    assert push_db.fetch('SELECT enabled FROM push.rules') == [[False]]
+    run(push_db, tick(NOW + datetime.timedelta(minutes=1)), stub,
+        monkeypatch)
+    run(push_db, register([warning_rule(WARN_RULE)]), stub, monkeypatch)
+    assert push_db.fetch(
+        'SELECT enabled, disabled_at FROM push.rules') == [[True, None]]
+    run(push_db, tick(NOW + datetime.timedelta(minutes=2)), stub,
+        monkeypatch)
+    assert len(stub.requests) == 1
+
+
+def test_a_returning_edited_rule_rearms(push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register([warning_rule(WARN_RULE)]), stub, monkeypatch)
+    add_alert(push_db, 'A', 'moderate')
+    run(push_db, tick(NOW), stub, monkeypatch)
+    run(push_db, register([]), stub, monkeypatch)
+    edited = warning_rule(WARN_RULE)
+    edited['params']['window'] = {'nextHours': 24}
+    run(push_db, register([edited]), stub, monkeypatch)
+    run(push_db, tick(NOW + datetime.timedelta(minutes=1)), stub,
+        monkeypatch)
+    assert len(stub.requests) == 2
+
+
+def test_disabled_rules_are_purged_after_a_week(push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register([warning_rule(WARN_RULE)]), stub, monkeypatch)
+    push_db.insert('push.rule_state', [{
+        'rule_id': WARN_RULE, 'occurrence_key': 'k', 'state': '{}',
+        'expires_at': NOW + datetime.timedelta(days=30)}])
+    run(push_db, register([]), stub, monkeypatch)
+
+    def clean(at):
+        async def fn(worker, pool):
+            await worker.cleanup_tick(at)
+        return fn
+    run(push_db, clean(NOW + datetime.timedelta(days=6)), stub, monkeypatch)
+    assert len(push_db.fetch('SELECT * FROM push.rule_state')) == 1
+    run(push_db, clean(NOW + datetime.timedelta(days=8)), stub, monkeypatch)
+    assert push_db.fetch('SELECT * FROM push.rules') == []
+    assert push_db.fetch('SELECT * FROM push.rule_state') == []
+    assert push_db.fetch('SELECT * FROM push.cells') == []

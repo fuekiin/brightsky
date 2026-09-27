@@ -174,6 +174,90 @@ area while at home; both `dwd_warning` registrations match the same DWD warning.
   then the broader threshold, then the lower rule id (`firing.dedupe_rain`, `rain_areas`).
 - User rules are untouched: they are distinct rules.
 
+## Missing rules are disabled, not deleted (2026-09-27)
+
+On 2026-09-26 an app launch race registered a device without its own rules for about 20
+minutes. The server deleted them, their `rule_state` went with them, and when they came back
+a forecast rule reported the same weekend a second time („Grillwetter", Fri 18:07 and again
+Sat 10:22). The app fixes the race itself (branch `fix/registration-launch-race`), but old
+builds keep flapping until they update.
+
+- **Disabled, with its state.** A rule missing from a registration is disabled
+  (`enabled = false`, `disabled_at`, migration 0023). The loops only evaluate enabled rules.
+  When it comes back unchanged it is enabled again and does not report what it already
+  reported; when its kind or params changed it re-arms, as before.
+- **Only what there is to remember.** A missing rule without state and without a running
+  activity is deleted at once, and a device keeps at most `MAX_DISABLED_PER_DEVICE` (50)
+  disabled rules, so re-registering is no way to pile up rows. `cleanup_tick` deletes rules
+  disabled for more than 7 days (`DISABLED_RETENTION`). `DELETE /v1/devices` still deletes
+  everything at once.
+- **Back after hours, running events re-arm.** After more than `REARM_AFTER` (6 h) away, a
+  rule's `rain` and `rolling` state is dropped: whether the rain stopped meanwhile was not
+  watched. Dated occasions („Samstag") and warning threads stay reported.
+- **Live Activities.** `RUNNING_SQL` treats a disabled rule like a deleted one, so its activity
+  ends quietly within a tick, whatever row it is attached to. The end records the rule
+  (`state.gone`). If that same rule comes back, the activity does not start again with an
+  alert: for a warning, not for the same event unless it escalates (as after a dismissal); for
+  rain, not during the 60-minute cooldown unless heavier. Another rule's candidate starts in
+  the same tick, so a rule swapped for another in one registration never costs an extra
+  notification. A warning activity another rule still carries is attached to that rule.
+- **The cell cap counts rules in use.** It counts the cells in use after the registration:
+  the other devices' rules plus this set. A place can be swapped at the cap, and a device never
+  loses a place it already has. A rule disabled within `REARM_AFTER` still holds its place (it
+  may only have been missing from one registration); one disabled longer holds none. The exact
+  count runs only when the set's new cells may not fit: the `push.cells` row count bounds it
+  from above.
+- **A dropped rule id may move.** A rule id disabled on one device may be registered by
+  another (its state is dropped); one enabled elsewhere is still `duplicate_id`, also when both
+  devices register it at the same moment (the upsert never touches another device's row).
+
+## Second review (2026-09-27)
+
+A senior review of the change above and of the whole feature. Fixed, with one test per finding
+in `tests/test_push_review2.py`:
+
+| # | Finding | Fix |
+|---|---------|-----|
+| 1 | The launch race still double-alerted live rules (end, then a fresh start with sound) | `state.gone`, see above |
+| 2 | Disabled rules had no cap: an authenticated client could pile up rows | stateless ones deleted at once, 50 per device |
+| 3 | Disabled rules held cells against `PUSH_MAX_CELLS` for 7 days | the cap counts enabled rules |
+| 4 | An update racing the registration re-attached an activity to a disabled rule, which then ran on | `RUNNING_SQL` joins enabled rules only |
+| 5 | One failed DWD listing request failed the warnings tick, and a listing outage cancelled the whole Morgenübersicht | a failed check is „not synced this time"; `Stale` after 10 minutes as before |
+| 6 | A rule switched back on after days kept a frozen „told" rain/rolling state | `REARM_AFTER` |
+| 7 | A registration without a token kept a token of the other APNs environment | tokens are only kept within one environment |
+| 8 | A rule id could not move to another device for 7 days | a disabled rule id moves |
+| 9 | The runbook did not mention migration 0023 | runbook §4 and §6 |
+| 10 | Pruning locks could drop a lock just handed to a waiter | `livectl.prune_locks` keeps locks with waiters |
+| B1 | No index on `live_activities(rule_id)` or `rules(cell_key)`: every purge scanned (9–22 s at 200k rules) | both in 0023 |
+| B2 | The digest fetched every forecast back to back at 07:00, holding a connection | fetched first, paced over `DIGEST_SPREAD_S` (300 s), outside the connection; a failed cell skips only its rules |
+| B3 | The warnings loop loaded every warning rule every minute | only rules at warn cells with warnings |
+
+Also: `store.register` is split into `_authorize`, `_upsert_device`, `_parse_rules`,
+`_admit`, `_retire_missing` and `_upsert_rule`; `digest_tick` into `digest_forecasts` and
+`digest_decision`.
+
+A second, independent review of these fixes found no critical or high issue; its findings are
+fixed as well (tests under „Second pass"):
+
+| # | Finding | Fix |
+|---|---------|-----|
+| 1 | At the cap, every registration ran the exact cell count (65 ms at 200k rules) | only when the set's new cells may not fit |
+| 2 | The disabled-rule cap could delete a rule coming back in the same registration | the cap skips the rules being kept |
+| 3 | A rule missing once lost its place at the cap to another device | disabled within `REARM_AFTER` still holds its place |
+| 4 | Two devices registering one new rule id at once: the second was told „accepted" | the upsert's result decides; `duplicate_id` |
+| 5 | A live rule swapped for another in one registration: end, notification, then a start (existed before) | the other rule's candidate starts in the same tick |
+| 6 | The digest used a warnings snapshot from before its minutes of fetches, and a rule deleted meanwhile cost the device its whole digest | the snapshot is checked after the fetches; rules are re-read |
+| 7 | Digest pacing had no rate ceiling | at most 20 requests a second (`DIGEST_MIN_SPACING`) |
+| 8 | A warning activity carried on by another rule stayed attached to the disabled one (existed before) | attached to the carrying rule |
+
+Not changed:
+
+- **A dead APNs token deletes the device** (`sender.forget_token`), rules and state included.
+  With #7 a token from the other environment no longer triggers it. Clearing the token instead
+  would keep evaluating uninstalled apps for 90 days.
+- **The digest does not apply the per-area rain dedupe.** The digest is one notification
+  anyway; its `items` are per rule, for the extension to name.
+
 ## Load on `web` (2026-09-24)
 
 Measured against production over 7 days (Traefik via Prometheus): 3 req/s at night, 23–31 by
