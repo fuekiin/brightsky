@@ -198,13 +198,18 @@ builds keep flapping until they update.
   ends quietly within a tick, whatever row it is attached to. The end records the rule
   (`state.gone`). If that same rule comes back, the activity does not start again with an
   alert: for a warning, not for the same event unless it escalates (as after a dismissal); for
-  rain, not during the 60-minute cooldown unless heavier. Another rule starts at once.
-- **The cell cap counts enabled rules.** It counts the cells in use after the registration
-  (other devices' enabled rules plus this set), so a disabled rule holds no place, a place
-  can be swapped at the cap, and a device never loses a place it already has. The exact count
-  runs only near the cap: the `push.cells` row count bounds it from above.
+  rain, not during the 60-minute cooldown unless heavier. Another rule's candidate starts in
+  the same tick, so a rule swapped for another in one registration never costs an extra
+  notification. A warning activity another rule still carries is attached to that rule.
+- **The cell cap counts rules in use.** It counts the cells in use after the registration:
+  the other devices' rules plus this set. A place can be swapped at the cap, and a device never
+  loses a place it already has. A rule disabled within `REARM_AFTER` still holds its place (it
+  may only have been missing from one registration); one disabled longer holds none. The exact
+  count runs only when the set's new cells may not fit: the `push.cells` row count bounds it
+  from above.
 - **A dropped rule id may move.** A rule id disabled on one device may be registered by
-  another (its state is dropped); one enabled elsewhere is still `duplicate_id`.
+  another (its state is dropped); one enabled elsewhere is still `duplicate_id`, also when both
+  devices register it at the same moment (the upsert never touches another device's row).
 
 ## Second review (2026-09-27)
 
@@ -230,6 +235,20 @@ in `tests/test_push_review2.py`:
 Also: `store.register` is split into `_authorize`, `_upsert_device`, `_parse_rules`,
 `_admit`, `_retire_missing` and `_upsert_rule`; `digest_tick` into `digest_forecasts` and
 `digest_decision`.
+
+A second, independent review of these fixes found no critical or high issue; its findings are
+fixed as well (tests under „Second pass"):
+
+| # | Finding | Fix |
+|---|---------|-----|
+| 1 | At the cap, every registration ran the exact cell count (65 ms at 200k rules) | only when the set's new cells may not fit |
+| 2 | The disabled-rule cap could delete a rule coming back in the same registration | the cap skips the rules being kept |
+| 3 | A rule missing once lost its place at the cap to another device | disabled within `REARM_AFTER` still holds its place |
+| 4 | Two devices registering one new rule id at once: the second was told „accepted" | the upsert's result decides; `duplicate_id` |
+| 5 | A live rule swapped for another in one registration: end, notification, then a start (existed before) | the other rule's candidate starts in the same tick |
+| 6 | The digest used a warnings snapshot from before its minutes of fetches, and a rule deleted meanwhile cost the device its whole digest | the snapshot is checked after the fetches; rules are re-read |
+| 7 | Digest pacing had no rate ceiling | at most 20 requests a second (`DIGEST_MIN_SPACING`) |
+| 8 | A warning activity carried on by another rule stayed attached to the disabled one (existed before) | attached to the carrying rule |
 
 Not changed:
 

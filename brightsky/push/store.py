@@ -110,7 +110,10 @@ async def register(conn, device, bearer, now):
             'WHERE id = ANY($1::uuid[]) AND device_id <> $2 AND NOT enabled',
             keep_ids, device_id)
         for position, rule in enumerate(keep):
-            await _upsert_rule(conn, device_id, rule, position, now)
+            if not await _upsert_rule(conn, device_id, rule, position, now):
+                # Another device registered the id first, concurrently
+                accepted.remove(rule.id)
+                rejected.append((rule.id, 'duplicate_id'))
     return accepted, rejected, new_secret_value, event
 
 
@@ -206,27 +209,32 @@ async def _admit(conn, device_id, parsed, now):
         [r.id for r in parsed], device_id)}
     # A global ceiling on distinct cells: upstream load scales with cells,
     # not users (design §2). It counts the cells in use after this
-    # registration — the other devices' enabled rules plus this set — so a
-    # disabled rule holds no place, and neither does one this set replaces.
-    # A cell the device already uses never costs: nobody loses a place.
+    # registration — the other devices' rules plus this set — so a place
+    # can be swapped at the ceiling, and a cell the device already uses
+    # never costs. A rule disabled within REARM_AFTER still holds its
+    # place (it may only have been missing from one registration); one
+    # disabled longer holds none.
+    held = '(enabled OR disabled_at > $2)'
     cells = list({r.cell_key for r in parsed})
     others = {r['cell_key'] for r in await conn.fetch(
-        'SELECT DISTINCT cell_key FROM push.rules '
-        'WHERE enabled AND device_id <> $2 AND cell_key = ANY($1)',
-        cells, device_id)}
+        f'SELECT DISTINCT cell_key FROM push.rules WHERE {held} '
+        'AND device_id <> $1 AND cell_key = ANY($3)',
+        device_id, now - REARM_AFTER, cells)}
     own = {r['cell_key'] for r in await conn.fetch(
-        'SELECT DISTINCT cell_key FROM push.rules '
-        'WHERE enabled AND device_id = $1', device_id)}
+        f'SELECT DISTINCT cell_key FROM push.rules WHERE {held} '
+        'AND device_id = $1', device_id, now - REARM_AFTER)}
     in_use = others | (own & set(cells))
     # Every cell in use has a row, so the rows bound the count from above:
-    # the exact count (tens of ms at 200k rules) only near the ceiling.
+    # the exact count (tens of ms at 200k rules) runs only when this set's
+    # new cells may not fit.
     free_cells = settings.PUSH_MAX_CELLS - await conn.fetchval(
         'SELECT count(*) FROM push.cells')
-    if free_cells < len(cells):
+    if free_cells < len(set(cells) - in_use):
         free_cells = settings.PUSH_MAX_CELLS - len(in_use - others) - (
             await conn.fetchval(
-                'SELECT count(DISTINCT cell_key) FROM push.rules '
-                'WHERE enabled AND device_id <> $1', device_id))
+                f'SELECT count(DISTINCT cell_key) FROM push.rules '
+                f'WHERE {held} AND device_id <> $1',
+                device_id, now - REARM_AFTER))
     keep, accepted, rejected = [], [], []
     for rule in parsed:
         if rule.id in foreign:
@@ -265,11 +273,13 @@ async def _retire_missing(conn, device_id, keep_ids, now):
         """
         DELETE FROM push.rules WHERE id IN (
           SELECT id FROM push.rules WHERE device_id = $1 AND NOT enabled
+            AND NOT (id = ANY($3::uuid[]))     -- coming back right now
           ORDER BY disabled_at DESC, id OFFSET $2)
-        """, device_id, MAX_DISABLED_PER_DEVICE)
+        """, device_id, MAX_DISABLED_PER_DEVICE, keep_ids)
 
 
 async def _upsert_rule(conn, device_id, rule, position, now):
+    """Returns False when the id belongs to another device."""
     lat, lon = rule.lat_lon
     await conn.execute(
         'INSERT INTO push.cells (cell_key, lat, lon) '
@@ -278,7 +288,7 @@ async def _upsert_rule(conn, device_id, rule, position, now):
     previous = await conn.fetchrow(
         'SELECT kind, params, enabled, disabled_at FROM push.rules '
         'WHERE id = $1 AND device_id = $2', rule.id, device_id)
-    await conn.execute(
+    status = await conn.execute(
         """
         INSERT INTO push.rules (
           id, device_id, kind, cell_key, params, schedule, live, position)
@@ -297,8 +307,10 @@ async def _upsert_rule(conn, device_id, rule, position, now):
         """,
         rule.id, device_id, rule.kind, rule.cell_key, rule.raw_params,
         rule.schedule, rule.live, position)
+    if status == 'INSERT 0 0':
+        return False
     if previous is None:
-        return
+        return True
     # An edited rule is a new rule: it re-arms (rules design §3). A new
     # cell is not an edit — rules at „Mein Standort" move with the phone
     # and must not report again in every cell.
@@ -312,6 +324,7 @@ async def _upsert_rule(conn, device_id, rule, position, now):
             'DELETE FROM push.rule_state '
             'WHERE rule_id = $1 AND occurrence_key = ANY($2)',
             rule.id, RUNNING_EVENTS)
+    return True
 
 
 def _semantic(params):

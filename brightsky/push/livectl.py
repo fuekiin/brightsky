@@ -336,25 +336,25 @@ async def rain_tick(conn, client, device, candidate, rain, running_cell,
             if gone:
                 # The rule's return does not start it again with an alert
                 # during the cooldown: it may only have been missing from
-                # one registration. Other rules may start at once.
+                # one registration. Another rule starts at once (below).
                 await end(conn, client, device, row,
                           dict(row['last_content']), now,
                           cooldown=rule_id is not None,
                           marks={'gone': rule_id} if rule_id else None)
-                return False
-            if now - row['started_at'] >= live.MAX_RAIN_LIFETIME:
+                row = await load(conn, device['id'])
+            elif now - row['started_at'] >= live.MAX_RAIN_LIFETIME:
                 # It ran its 4 h (§17.3)
                 await end(conn, client, device, row,
                           dict(row['last_content']), now)
                 return same_place
-            if rain is None:
+            elif rain is None:
                 return False    # no data: leave it alone, notify the rest
-            if rain.state == 'ended':
+            elif rain.state == 'ended':
                 # „Trocken für die nächsten 2 Stunden", then end (§4.5)
                 await end(conn, client, device, row,
                           live.rain_content(rain, now, rule_id), now)
                 return same_place
-            if candidate is not None and not same_place:
+            elif candidate is not None and not same_place:
                 # Rain somewhere else wins: never switch place silently.
                 await end(conn, client, device, row,
                           live.rain_content(rain, now, rule_id), now,
@@ -424,13 +424,14 @@ async def warning_tick(conn, client, device, candidate, status, now):
                 # Its rule was deleted, disabled or moved away: the warning
                 # still stands, so no „aufgehoben" — end quietly. A rule
                 # that was only missing from one registration does not
-                # start it again (below).
+                # start it again; another candidate starts at once (below).
                 rule_id = row['rule_id'] and str(row['rule_id'])
                 gone = status == 'gone' and rule_id
                 await end(conn, client, device, row,
                           dict(row['last_content']), now, cooldown=False,
                           marks={'gone': rule_id} if gone else None)
-                return False
+                row = await load(conn, device['id'])
+                s = row['state']
             if candidate is None:
                 return False
             if same:
@@ -457,6 +458,13 @@ async def warning_tick(conn, client, device, candidate, status, now):
                         alert=escalated or begins,
                         escalated_from=s.get('level') if escalated else None,
                         stage=stage)
+                elif str(row['rule_id']) != candidate.rule_id:
+                    # Another rule carries it now (its own was disabled or
+                    # deleted): attach it, so its status follows that rule.
+                    await _save(conn, device['id'], rule_id=candidate.rule_id,
+                                phase='warning',
+                                content=dict(row['last_content']),
+                                state=dict(s), now=now)
                 return True
         if candidate is None:
             return False

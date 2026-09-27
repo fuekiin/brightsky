@@ -25,6 +25,7 @@ M = datetime.timedelta(minutes=1)
 H = datetime.timedelta(hours=1)
 OTHER = '00000000-0000-0000-0000-00000000000e'
 BERLIN = '52.52,13.41'
+MUNICH = '48.14,11.58'
 LIVE = {'night': True}
 
 
@@ -148,18 +149,22 @@ def test_2_disabled_rules_per_device_are_capped(push_db, monkeypatch):
 # MARK: - #3 the cell cap counts enabled rules
 
 def test_3_a_place_can_be_replaced_at_the_cap(push_db, monkeypatch):
-    monkeypatch.setitem(settings, 'PUSH_MAX_CELLS', 1)
+    monkeypatch.setitem(settings, 'PUSH_MAX_CELLS', 2)
     run(push_db, reg([warning_rule(WARN_RULE)]), StubAPNs(), monkeypatch)
     add_state(push_db, WARN_RULE)
     moved = dict(warning_rule(WARN_RULE_2), cellKey=BERLIN)
     accepted, rejected, _, _ = run(push_db, reg([moved]), StubAPNs(),
                                    monkeypatch)
     assert (accepted, rejected) == ([WARN_RULE_2], [])
-    # The disabled rule keeps its cell row, but not its place.
-    accepted, rejected, _, _ = run(
-        push_db, reg([warning_rule(RAIN_RULE)], device=OTHER), StubAPNs(),
-        monkeypatch)
+    # The disabled rule holds its place for REARM_AFTER, then no more.
+    munich = dict(warning_rule(RAIN_RULE), cellKey=MUNICH)
+    _, rejected, _, _ = run(push_db, reg([munich], device=OTHER),
+                            StubAPNs(), monkeypatch)
     assert rejected == [(RAIN_RULE, 'capacity')]
+    accepted, _, _, _ = run(push_db, reg([munich], device=OTHER,
+                                         at=NOW + 7 * H), StubAPNs(),
+                            monkeypatch)
+    assert accepted == [RAIN_RULE]
 
 
 def test_3_a_device_keeps_its_place_when_others_fill_the_cap(
@@ -217,15 +222,17 @@ def test_5_a_failed_listing_check_is_tolerated_for_a_while(
 
 # MARK: - #6 back after hours, running events re-arm
 
-@pytest.mark.parametrize('away, left', [
-    (H, ['2026-09-23', 'rain']),
-    (7 * H, ['2026-09-23']),
+@pytest.mark.parametrize('away, key, left', [
+    (H, 'rain', ['2026-09-23', 'rain']),
+    (7 * H, 'rain', ['2026-09-23']),
+    (H, 'rolling', ['2026-09-23', 'rolling']),
+    (7 * H, 'rolling', ['2026-09-23']),
 ])
 def test_6_running_events_rearm_after_a_long_absence(
-        push_db, monkeypatch, away, left):
+        push_db, monkeypatch, away, key, left):
     rule = rain_rule(live_=False)
     run(push_db, reg([rule]), StubAPNs(), monkeypatch)
-    add_state(push_db, RAIN_RULE, 'rain', '{"armed": false}')
+    add_state(push_db, RAIN_RULE, key, '{"armed": false}')
     add_state(push_db, RAIN_RULE, '2026-09-23')
     run(push_db, reg([]), StubAPNs(), monkeypatch)
     run(push_db, reg([rule], at=NOW + away), StubAPNs(), monkeypatch)
@@ -341,3 +348,170 @@ def test_b3_warning_rules_are_loaded_by_warn_cell(push_db, monkeypatch):
     add_alert(push_db, 'A', 'moderate')
     assert run(push_db, tick(NOW + M), stub, monkeypatch) == 1
     assert events(stub) == ['alert']
+
+
+# MARK: - Second pass (the double-check of the fixes above)
+
+def test_2_the_oldest_disabled_rules_go_first(push_db, monkeypatch):
+    monkeypatch.setattr(store, 'MAX_DISABLED_PER_DEVICE', 1)
+    old, new = WARN_RULE, WARN_RULE_2
+    run(push_db, reg([warning_rule(old), warning_rule(new)]), StubAPNs(),
+        monkeypatch)
+    add_state(push_db, old)
+    add_state(push_db, new)
+    run(push_db, reg([warning_rule(new)]), StubAPNs(), monkeypatch)
+    run(push_db, reg([], at=NOW + M), StubAPNs(), monkeypatch)
+    assert rules(push_db) == [(new, DEVICE, False)]
+
+
+def test_2_returning_rules_are_not_capped_away(push_db, monkeypatch):
+    # a is disabled, then b is dropped as a returns. Counting a as
+    # disabled, the cap would delete it (the oldest) and a would come back
+    # without its state; it only counts rules that stay disabled.
+    monkeypatch.setattr(store, 'MAX_DISABLED_PER_DEVICE', 1)
+    a, b = warning_rule(WARN_RULE), warning_rule(WARN_RULE_2)
+    run(push_db, reg([a]), StubAPNs(), monkeypatch)
+    add_state(push_db, WARN_RULE)
+    run(push_db, reg([b]), StubAPNs(), monkeypatch)
+    add_state(push_db, WARN_RULE_2)
+    run(push_db, reg([a], at=NOW + M), StubAPNs(), monkeypatch)
+    assert rules(push_db) == [(WARN_RULE, DEVICE, True),
+                              (WARN_RULE_2, DEVICE, False)]
+    assert sorted(str(r[0]) for r in push_db.fetch(
+        'SELECT rule_id FROM push.rule_state')) == [WARN_RULE, WARN_RULE_2]
+
+
+def test_3_a_rule_missing_once_keeps_its_place_at_the_cap(
+        push_db, monkeypatch):
+    run(push_db, reg([warning_rule(WARN_RULE)]), StubAPNs(), monkeypatch)
+    add_state(push_db, WARN_RULE)
+    monkeypatch.setitem(settings, 'PUSH_MAX_CELLS', 1)
+    run(push_db, reg([]), StubAPNs(), monkeypatch)             # the race
+    _, rejected, _, _ = run(
+        push_db, reg([dict(warning_rule(RAIN_RULE), cellKey=BERLIN)],
+                     device=OTHER), StubAPNs(), monkeypatch)
+    assert rejected == [(RAIN_RULE, 'capacity')]
+    accepted, rejected, _, _ = run(
+        push_db, reg([warning_rule(WARN_RULE)], at=NOW + M), StubAPNs(),
+        monkeypatch)
+    assert (accepted, rejected) == ([WARN_RULE], [])
+
+
+def test_4_a_rule_another_device_owns_is_not_overwritten(
+        push_db, monkeypatch):
+    from brightsky.push.rules import parse_rule
+    run(push_db, reg([warning_rule(WARN_RULE)], device=OTHER), StubAPNs(),
+        monkeypatch)
+    run(push_db, reg([]), StubAPNs(), monkeypatch)
+
+    async def race(worker, pool):
+        # What a registration that passed its check before the other
+        # device committed does next
+        async with pool.acquire() as conn:
+            rule = parse_rule(dict(warning_rule(WARN_RULE, level=3)))
+            return await store._upsert_rule(conn, DEVICE, rule, 0, NOW)
+    assert run(push_db, race, StubAPNs(), monkeypatch) is False
+    assert rules(push_db) == [(WARN_RULE, OTHER, True)]
+    assert push_db.fetch('SELECT params FROM push.rules')[0][0][
+        'all'][0]['warning']['minLevel'] == 2
+
+
+def test_5_a_live_warning_rule_swapped_in_one_registration(
+        push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([warning_rule(WARN_RULE, live=LIVE)]), stub,
+        monkeypatch)
+    add_alert(push_db, 'A', 'moderate')
+    run(push_db, tick(NOW), stub, monkeypatch)
+    report_token(push_db)
+    run(push_db, register_live([warning_rule(WARN_RULE_2, live=LIVE)]),
+        stub, monkeypatch)
+    run(push_db, tick(NOW + M), stub, monkeypatch)
+    run(push_db, tick(NOW + 2 * M), stub, monkeypatch)
+    # The new rule takes the running event over: no notification, no end
+    assert events(stub) == ['start']
+
+
+def test_5_a_swapped_rule_with_another_warning_starts_in_the_same_tick(
+        push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([warning_rule(WARN_RULE, live=LIVE)]), stub,
+        monkeypatch)
+    add_alert(push_db, 'A', 'moderate')
+    run(push_db, tick(NOW), stub, monkeypatch)
+    report_token(push_db)
+    # The new rule wants severe warnings only, and one has just come in
+    run(push_db, register_live([warning_rule(WARN_RULE_2, level=3,
+                                             live=LIVE)]), stub, monkeypatch)
+    add_alert(push_db, 'B', 'severe', onset=NOW + 2 * H)
+    run(push_db, tick(NOW + M), stub, monkeypatch)
+    run(push_db, tick(NOW + 2 * M), stub, monkeypatch)
+    assert events(stub) == ['start', 'end', 'start']   # no notification
+
+
+def test_5_a_live_rain_rule_swapped_in_one_registration(
+        push_db, monkeypatch):
+    stub = StubAPNs()
+    run(push_db, register_live([rain_rule()]), stub, monkeypatch)
+    radar(monkeypatch, [0.2] * 24)
+    run(push_db, ntick(NOW), stub, monkeypatch)
+    report_token(push_db)
+    run(push_db, register_live([dict(rain_rule(), id=WARN_RULE_2)]), stub,
+        monkeypatch)
+    run(push_db, ntick(NOW + 5 * M), stub, monkeypatch)
+    run(push_db, ntick(NOW + 10 * M), stub, monkeypatch)
+    # Ended and started again in one tick: no notification in between,
+    # no second start later
+    assert events(stub) == ['start', 'end', 'start']
+
+
+def test_6_the_digest_checks_warnings_after_its_fetches_and_drops_rules_gone_meanwhile(  # noqa: E501
+        push_db, monkeypatch):
+    from brightsky.push import berlin, evaluator as ev
+    warn = dict(warning_rule(WARN_RULE_2), schedule=DIGEST)
+    run(push_db, reg([digest_rule(WARN_RULE, CELL), warn,
+                      digest_rule(RAIN_RULE, BERLIN)]), StubAPNs(),
+        monkeypatch)
+    for rule_id in (WARN_RULE, WARN_RULE_2, RAIN_RULE):
+        add_state(push_db, rule_id, 'old')    # kept when disabled
+    night = datetime.datetime(2026, 9, 23, 23, tzinfo=berlin.TZ)
+    order = []
+
+    async def fetch(self, cell_key, lat, lon, now):
+        order.append('fetch')
+        if cell_key == BERLIN:     # a registration drops this one meanwhile
+            push_db.fetch("UPDATE push.rules SET enabled = false "
+                          f"WHERE id = '{RAIN_RULE}' RETURNING id")
+        self.hours[cell_key] = [ev.Hour(night, temperature=21)]
+        self.fetched_at[cell_key] = now
+        return self.hours[cell_key]
+    monkeypatch.setattr(sources.ForecastSource, 'fetch', fetch)
+
+    async def dtick(worker, pool):
+        async def refresh(conn, now):
+            order.append('refresh')
+            return sources.WarningsObservation(fetched_at=now)
+        worker.warnings.refresh = refresh
+        return await worker.digest_tick(
+            datetime.datetime(2026, 9, 23, 7, 5, tzinfo=berlin.TZ))
+    stub = StubAPNs()
+    run(push_db, dtick, stub, monkeypatch)
+    assert order == ['fetch', 'fetch', 'refresh']
+    [(_, _, payload)] = bodies(stub)
+    assert payload['nano']['ruleIds'] == [WARN_RULE]
+
+
+def test_8_the_rule_carrying_a_warning_activity_owns_it(
+        push_db, monkeypatch):
+    stub = StubAPNs()
+    first = warning_rule(WARN_RULE, live=LIVE)
+    second = warning_rule(WARN_RULE_2, live=LIVE)
+    run(push_db, register_live([first, second]), stub, monkeypatch)
+    add_alert(push_db, 'A', 'moderate')
+    run(push_db, tick(NOW), stub, monkeypatch)
+    report_token(push_db)
+    run(push_db, register_live([second]), stub, monkeypatch)
+    run(push_db, tick(NOW + M), stub, monkeypatch)
+    assert events(stub) == ['start']
+    assert [str(r[0]) for r in push_db.fetch(
+        'SELECT rule_id FROM push.live_activities')] == [WARN_RULE_2]

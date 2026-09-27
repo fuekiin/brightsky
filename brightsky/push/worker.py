@@ -29,6 +29,8 @@ FORECAST_MAX_SPACING = 1.0
 # The digest spreads its forecast requests over this many seconds: at 07:00
 # every digest cell meets the app's morning peak on `web`.
 DIGEST_SPREAD_S = 300
+# … at most 20 a second: with many cells the spread grows instead.
+DIGEST_MIN_SPACING = 0.05
 AUDIT_RETENTION = datetime.timedelta(days=30)
 DEVICE_RETENTION = datetime.timedelta(days=90)
 DISABLED_RETENTION = datetime.timedelta(days=7)
@@ -543,8 +545,26 @@ class Worker:
             if done is not None and berlin.local_date(done) == today:
                 return None
             rows = await conn.fetch(DIGEST_SQL)
+        parsed = []
+        for row in rows:
+            with isolated('digest rule', row['id']):
+                rule = rule_from_row(row)
+                if not rulemod.is_expired(rule.window, now):
+                    parsed.append((rule, row))
+        # First the forecasts, outside the connection and paced like the
+        # forecast loop's; then one national radar request for every rain
+        # rule in the digest.
+        failed = await self.digest_forecasts(
+            [row for rule, row in parsed if rule.values], now)
+        rain_cells = {row['cell_key']: (row['lat'], row['lon'])
+                      for rule, row in parsed if rule.kind == 'rain_nowcast'}
+        radar = (await self.nowcast.fetch_all(rain_cells, now)
+                 if rain_cells else {})
+        async with self.pool.acquire() as conn:
+            # Checked only now, right before deciding: the fetches above may
+            # take minutes, and the snapshot must be fresh when it is used.
             obs = None
-            if any(r['kind'] == 'dwd_warning' for r in rows):
+            if any(rule.kind == 'dwd_warning' for rule, _ in parsed):
                 try:
                     obs = await self.warnings.refresh(conn, now)
                 except sources.Stale:
@@ -553,29 +573,18 @@ class Worker:
                     # … then send the rest without the warning rules
                     logger.warning('Digest: warnings stale, sending '
                                    'without warning rules')
-        parsed = []
-        for row in rows:
-            with isolated('digest rule', row['id']):
-                rule = rule_from_row(row)
-                if rulemod.is_expired(rule.window, now):
-                    continue
-                if rule.kind == 'dwd_warning' and obs is None:
-                    continue
-                parsed.append((rule, row))
-        # Outside the connection and paced, as the forecast loop.
-        failed = await self.digest_forecasts(
-            [row for rule, row in parsed if rule.values], now)
-        # One national radar request for every rain rule in the digest
-        rain_cells = {row['cell_key']: (row['lat'], row['lon'])
-                      for rule, row in parsed if rule.kind == 'rain_nowcast'}
-        radar = (await self.nowcast.fetch_all(rain_cells, now)
-                 if rain_cells else {})
-        async with self.pool.acquire() as conn:
+            # A registration during the fetches may have dropped rules
+            current = {str(r['id']) for r in await conn.fetch(
+                'SELECT id FROM push.rules '
+                'WHERE id = ANY($1::uuid[]) AND enabled',
+                [rule.id for rule, _ in parsed])}
+            parsed = [(rule, row) for rule, row in parsed
+                      if rule.id in current
+                      and not (rule.kind == 'dwd_warning' and obs is None)
+                      and not (rule.values and row['cell_key'] in failed)]
             states = await load_states(conn, [row['id'] for _, row in parsed])
             decided = []
             for rule, row in parsed:
-                if rule.values and row['cell_key'] in failed:
-                    continue
                 with isolated('digest rule', row['id']):
                     decision = await self.digest_decision(
                         rule, row, obs, radar, states.get(rule.id, {}), now)
@@ -599,8 +608,8 @@ class Worker:
         DIGEST_SPREAD_S. Returns the cells that failed."""
         cells = {row['cell_key']: row for row in rows
                  if not self.forecast_fresh(row['cell_key'], now)}
-        spacing = min(FORECAST_MAX_SPACING,
-                      DIGEST_SPREAD_S / max(1, len(cells)))
+        spacing = max(DIGEST_MIN_SPACING, min(
+            FORECAST_MAX_SPACING, DIGEST_SPREAD_S / max(1, len(cells))))
         failed = set()
         for row in cells.values():
             try:
