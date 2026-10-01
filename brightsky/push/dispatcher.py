@@ -138,7 +138,10 @@ async def prepare_event(conn, device, event_key, fires, now, pending):
     sent = await conn.fetchval(
         """
         SELECT count(*) FROM push.notifications_sent
-        WHERE device_id = $1 AND push_type = 'alert' AND apns_status = 200
+        -- Live Activity pushes that light the screen count too (review
+        -- 2026-10-01: starts were never counted)
+        WHERE device_id = $1 AND (push_type = 'alert' OR alerting)
+          AND apns_status = 200
           AND sent_at > $2
         """, device_id, now - datetime.timedelta(hours=1))
     sent += pending.get(device_id, 0)

@@ -101,17 +101,21 @@ Notes:
 
 ## 4. Migrate, then start
 
-`push-work` does not migrate. The push migrations (0022, and 0023: `push.rules.disabled_at`
-plus two indexes) are applied by the `worker` container (`--migrate work`), or explicitly
-first. `push-api` needs 0023 before it starts: without `disabled_at` every registration fails
-with 500. Code of the previous release runs fine on the new schema, so migrating first is
-always safe:
+`push-work` does not migrate. The push migrations (0022; 0023: `push.rules.disabled_at`
+plus two indexes; 0024: `notifications_sent.live_event`/`alerting` and
+`devices.live_unconfirmed`, the Live Activity review of 2026-10-01) are applied by the `worker`
+container (`--migrate work`), or explicitly first. `push-api` needs 0023 before it starts:
+without `disabled_at` every registration fails with 500. **push-work and push-api need 0024:**
+push-work checks the columns at start and exits with „push schema is missing …" without them
+(otherwise every delivery would fail); push-api has no such check — without 0024 every
+registration, token report and dismissal fails with 500, and so does `push-send`. Migrate first. Code of the previous release runs fine on the new schema (all three
+columns are nullable or defaulted and ignored by it), so migrating first is always safe:
 
 ```bash
 cd ~/brightsky
 C="docker compose -f brightsky.yml -f traefik.yml -f analytics.yml"
 $C pull
-$C run --rm brightsky migrate      # applies 0022/0023_push*.sql; safe to run twice
+$C run --rm brightsky migrate      # applies 0022–0024_push*.sql; safe to run twice
 $C up -d worker web radar3d        # the new image tag recreates them anyway
 $C up -d push-work push-api
 ```
@@ -149,7 +153,7 @@ docker compose -f brightsky.yml -f traefik.yml -f analytics.yml stop push-api pu
 The app treats an unreachable push server like any other outage: rules stay on the device, and
 registration is retried on the next launch. Schema `push` stays behind unused (additive
 migration, like pollen and radar3d). To remove it entirely: `DROP SCHEMA push CASCADE;` and
-`DELETE FROM migrations WHERE id IN (22, 23);`. Only do that when the push service is not coming back
+`DELETE FROM migrations WHERE id IN (22, 23, 24);`. Only do that when the push service is not coming back
 soon, since it discards every registration.
 
 ## 7. Record

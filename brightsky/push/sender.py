@@ -51,22 +51,25 @@ async def send(client, *, token, environment, payload, push_type='alert',
 
 
 async def record(conn, result, *, device_id, token, token_field,
-                 push_type='alert', rule_id=None, occurrence_key=None, now):
+                 push_type='alert', rule_id=None, occurrence_key=None, now,
+                 live_event=None, alerting=None):
     """The audit row, `apns` health, and dead-token cleanup.
 
     `token_field` says which token this is, so a dead one is cleaned up
     the right way: a dead `apns_token` deletes the device (design §4.4),
     a dead push-to-start or activity token only forgets that token.
+    `live_event`/`alerting`: for Live Activity pushes, which event it was
+    and whether it lit the screen (the rate limits count both).
     """
     await conn.execute(
         """
         INSERT INTO push.notifications_sent (
           device_id, rule_id, occurrence_key, push_type, sent_at,
-          apns_status, apns_reason, apns_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          apns_status, apns_reason, apns_id, live_event, alerting)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         """,
         device_id, rule_id, occurrence_key, push_type, now, result.status,
-        result.reason, result.apns_id)
+        result.reason, result.apns_id, live_event, alerting)
     if result.ok:
         await store.mark_source(conn, 'apns', now)
     else:
@@ -89,9 +92,14 @@ async def deliver(conn, client, *, device_id, environment, token,
         client, token=token, environment=environment, payload=payload,
         push_type=push_type, priority=priority, collapse_id=collapse_id,
         expiration=expiration, now=now, sleep=sleep, retry=retry)
+    live_event = alerting = None
+    if push_type == 'liveactivity':
+        aps = payload.get('aps', {})
+        live_event, alerting = aps.get('event'), 'alert' in aps
     await record(conn, result, device_id=device_id, token=token,
                  token_field=token_field, push_type=push_type,
-                 rule_id=rule_id, occurrence_key=occurrence_key, now=now)
+                 rule_id=rule_id, occurrence_key=occurrence_key, now=now,
+                 live_event=live_event, alerting=alerting)
     return result
 
 

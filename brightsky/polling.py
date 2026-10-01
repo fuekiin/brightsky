@@ -56,7 +56,9 @@ class DWDPoller:
 
     def poll_url(self, url):
         self.logger.debug("Loading %s", url)
-        resp = requests.get(url)
+        # nano: a request without a timeout hung the import worker for an
+        # hour after a network outage (2026-10-01)
+        resp = requests.get(url, timeout=60)
         resp.raise_for_status()
         return self.parse(url, resp.text)
 

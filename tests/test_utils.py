@@ -1,7 +1,9 @@
 import datetime
+from unittest.mock import patch
+
 from dateutil.tz import tzoffset, tzutc
 
-from brightsky.utils import daytime, parse_date, sunrise_sunset
+from brightsky.utils import daytime, download, parse_date, sunrise_sunset
 
 
 def test_parse_date():
@@ -32,3 +34,15 @@ def test_daytime():
     # Sydney
     assert daytime(-33.8, 151, midnight_10) == 'night'
     assert daytime(-33.8, 151, noon_10) == 'day'
+
+
+def test_download_times_out(tmp_path):
+    # A download without a timeout hung the import worker after a network
+    # outage (2026-10-01).
+    config = {'get.return_value.content': b'x',
+              'get.return_value.headers': {
+                  'Last-Modified': 'Thu, 01 Oct 2026 21:00:00 GMT',
+                  'Content-Length': '1'}}
+    with patch('brightsky.utils.requests', **config) as requests:
+        download('http://example.com/f.kmz', tmp_path)
+    assert requests.get.call_args.kwargs['timeout']

@@ -41,7 +41,9 @@ def download(url, directory):
     Download a resource from `url` into `directory`, returning its path and
     fingerprint.
     """
-    resp = requests.get(url, headers={'User-Agent': USER_AGENT})
+    # nano: never hang on a stalled connection (2026-10-01). A read timeout,
+    # so large files still download as long as bytes keep coming.
+    resp = requests.get(url, headers={'User-Agent': USER_AGENT}, timeout=60)
     resp.raise_for_status()
     filename = os.path.basename(url)
     path = os.path.join(directory, filename)

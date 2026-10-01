@@ -76,3 +76,13 @@ def test_dwdpoller_poll_ignores_parsed_files(db, data_dir):
         assert url in urls
         assert url not in new_urls
         assert len(new_urls) == len(urls) - 1
+
+
+def test_dwdpoller_requests_time_out(data_dir):
+    # A request without a timeout hung the import worker after a network
+    # outage (2026-10-01).
+    with open(data_dir / 'dwd_opendata_index.html') as f:
+        config = {'get.return_value.text': f.read()}
+    with patch('brightsky.polling.requests', **config) as requests:
+        DWDPoller().poll_url('http://example.com/')
+    assert requests.get.call_args.kwargs['timeout']
