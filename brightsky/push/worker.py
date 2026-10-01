@@ -351,7 +351,15 @@ class Worker:
     async def warnings_tick(self, now):
         async with self.pool.acquire() as conn:
             await self.resolve_cells(conn, now)
-            obs = await self.warnings.refresh(conn, now)
+            try:
+                obs = await self.warnings.refresh(conn, now)
+            except sources.Stale:
+                # Without fresh warnings nothing is evaluated — but a card
+                # whose warning has expired ends on time all the same: that
+                # needs no new data (2026-10-01: ingest hung after a network
+                # outage and 88 warning cards outlived their warning).
+                await self.expire_warnings(conn, now)
+                raise
             # Only rules at a warn cell with warnings: nothing else can
             # match or write state.
             rows = await conn.fetch(
@@ -383,6 +391,14 @@ class Worker:
             await dispatch_all(conn, self.client, decided, now)
             await store.mark_source(conn, 'warnings', now)
         return len(rows)
+
+    async def expire_warnings(self, conn, now):
+        for r in await conn.fetch(RUNNING_SQL, 'warning'):
+            expires = r['state'].get('expires')
+            if expires and datetime.datetime.fromisoformat(expires) <= now:
+                with isolated('expiring warning for device', r['d_id']):
+                    await livectl.expire_warning(conn, self.client,
+                                                 device_of(r), now)
 
     @staticmethod
     def warning_candidates(candidates, rule, row, matches, states, decision,

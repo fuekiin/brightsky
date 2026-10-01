@@ -731,6 +731,21 @@ async def rain_tick(conn, client, device, candidate, rain, running_cell,
 
 # MARK: - Warnings
 
+async def expire_warning(conn, client, device, now):
+    """End the device's warning activity if its warning has expired — the
+    same end `warning_tick` gives it, for when warnings cannot be evaluated
+    (worker.expire_warnings)."""
+    async with lock(device['id']):
+        row = await load(conn, device['id'])
+        if not (active(row) and row['phase'] == 'warning'):
+            return
+        expires = row['state'].get('expires')
+        if expires and datetime.datetime.fromisoformat(expires) <= now:
+            # Expiry is not a cancellation: end, no „aufgehoben".
+            await end(conn, client, device, row, dict(row['last_content']),
+                      now, cooldown=False)
+
+
 def _cancelled(row, now):
     content = dict(row['last_content'])
     phase = dict(content['phase']['warning']['_0'])

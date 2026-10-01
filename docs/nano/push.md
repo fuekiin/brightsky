@@ -374,6 +374,22 @@ within minutes, dismissals were ignored for rain, starts never counted toward th
   are not the heavy exception are 4 rule replacements during rain (another rule starts at once —
   still so, deferred).
 
+## Network outage 2026-10-01: stale warnings, hung import
+
+From 23:25 to about 00:10 the server's network was down (OVH). The import
+worker hung for good in a DWD request without a timeout, so the warnings
+went stale. The warnings loop rightly stopped evaluating, but it also
+stopped ending cards whose warning had expired: 88 cards still showed
+„bis 0:00" after midnight, until the worker was restarted.
+
+- Ending on expiry needs no new data. When the warnings are stale,
+  `warnings_tick` still ends every warning card past its `expires`
+  (`expire_warnings` → `livectl.expire_warning`, the same quiet end as
+  `warning_tick`) and then raises `Stale` as before.
+- Every DWD request of the import (`polling.poll_url`, `utils.download`)
+  has `timeout=60`, a read timeout: large files still come in as long as
+  bytes keep flowing.
+
 ## Load on `web` (2026-09-24)
 
 Measured against production over 7 days (Traefik via Prometheus): 3 req/s at night, 23–31 by

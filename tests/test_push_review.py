@@ -75,6 +75,41 @@ def test_expired_warning_ends_without_aufgehoben(push_db, monkeypatch):
         == 'active'
 
 
+def test_expired_warning_ends_while_warnings_are_stale(push_db, monkeypatch):
+    # 2026-10-01: ingest hung after a network outage, the warnings went
+    # stale and 88 cards outlived their warning. Ending on expiry needs no
+    # new data.
+    stub = StubAPNs()
+    run(push_db, register_live([warning_rule(WARN_RULE,
+                                             live={'night': False})]),
+        stub, monkeypatch)
+    add_alert(push_db, 'A', 'moderate', onset=NOW - H, hours=2)
+    run(push_db, tick(NOW), stub, monkeypatch)
+    report_token(push_db)
+    n = len(stub.requests)
+
+    async def out_of_sync(self, conn):
+        return False
+
+    def stale(at):
+        async def fn(worker, pool):
+            monkeypatch.setattr(sources.WarningsSource, 'in_sync',
+                                out_of_sync)
+            with pytest.raises(sources.Stale):
+                await worker.warnings_tick(at)
+        return fn
+    run(push_db, stale(NOW + 30 * M), stub, monkeypatch)   # not expired yet
+    assert len(stub.requests) == n
+    run(push_db, stale(NOW + H + M), stub, monkeypatch)    # past its expiry
+    aps = bodies(stub)[-1][2]['aps']
+    assert aps['event'] == 'end'
+    assert aps['content-state']['phase']['warning']['_0']['stage'] \
+        == 'active'
+    assert live_row(push_db)[1]
+    run(push_db, stale(NOW + H + 2 * M), stub, monkeypatch)
+    assert len(stub.requests) == n + 1
+
+
 def test_cancelled_warning_says_aufgehoben_with_time(push_db, monkeypatch):
     stub = StubAPNs()
     run(push_db, register_live([warning_rule(WARN_RULE,
