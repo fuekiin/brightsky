@@ -14,8 +14,11 @@ import collections
 import datetime
 import logging
 import time
+from dataclasses import dataclass
 
-from brightsky.push import evaluator as ev, live, payloads, sender
+from brightsky.push import evaluator as ev, firing, live, payloads, sender
+from brightsky.push.rules import parse_cell_key
+from brightsky.settings import settings
 
 
 logger = logging.getLogger('brightsky.push.live')
@@ -70,7 +73,14 @@ async def _save(conn, device_id, *, rule_id, phase, content, state, now,
                              ELSE push.live_activities.activity_id END,
           last_update_at = excluded.last_update_at,
           last_content = excluded.last_content,
-          state = excluded.state,
+          -- What outlives any one state written here (STICKY: the rain
+          -- episodes, the replaced activity ids) is kept unless the new
+          -- state brings its own. An update writing only its _state() wiped
+          -- endedIds within minutes (second review 2026-10-01).
+          state = COALESCE((
+            SELECT jsonb_object_agg(key, value)
+            FROM jsonb_each(push.live_activities.state)
+            WHERE key = ANY($10::text[])), '{}'::jsonb) || excluded.state,
           ended_at = excluded.ended_at,
           cooldown_until = COALESCE(excluded.cooldown_until,
                                     push.live_activities.cooldown_until)
@@ -79,7 +89,11 @@ async def _save(conn, device_id, *, rule_id, phase, content, state, now,
         WHERE $9 OR push.live_activities.ended_at IS NULL
         """,
         device_id, rule_id, phase, now, content, state,
-        now if ended else None, cooldown_until, started)
+        now if ended else None, cooldown_until, started, list(STICKY))
+
+
+# State keys that outlive any one activity's state (`_save`).
+STICKY = ('episodes', 'endedIds')
 
 
 async def _push(conn, client, device, row, payload, *, start, alert, now,
@@ -104,9 +118,24 @@ async def _push(conn, client, device, row, payload, *, start, alert, now,
         retry=not start)
 
 
+# A device that never proved its cards arrive (`devices.live_confirmed`: a
+# token report or a dismissal, ever) falls back to notifications after this
+# many starts in a row without either; a registration gives it this many
+# again. Once confirmed it never falls back: the app reports dismissals even
+# where it fails to report tokens, so a missing token alone is no evidence
+# (second review 2026-10-01: a plain counter would have moved 55 % of card
+# devices to notifications, half of them wrongly).
+UNCONFIRMED_STARTS = 2
+# Activity ids the row remembers after replacing them with a new start.
+ENDED_IDS = 5
+
+
 def can_start(device):
     return bool(device['live_activities_enabled']
-                and device['push_to_start_token'])
+                and device['push_to_start_token']
+                and (device.get('live_confirmed', True)
+                     or (device.get('live_unconfirmed') or 0)
+                     < UNCONFIRMED_STARTS))
 
 
 def _sound(candidate, now):
@@ -129,7 +158,18 @@ def _content(c, now, escalated_from=None, stage=None):
 
 def _alert_text(c, now, stage=None):
     if c.kind == 'rain':
-        return 'Regen zieht auf', live.rain_headline(c.rain, now)
+        r = c.rain
+        headline = live.rain_headline(r, now)
+        if r.heavy:
+            # The episode's one extra alert says why it lights the screen
+            # (it read „Regen zieht auf · Trocken in 120 Min." — review
+            # 2026-10-01) — not „Starkregen", DWD's warning term from
+            # 15 mm/h; heavy here is ≥ 10 mm/h (second review).
+            when = ('jetzt kräftig' if r.heavy_at <= now
+                    else f'kräftig ab {ev.clock(r.heavy_at)}')
+            return 'Kräftiger Regen', f'{headline} · {when}'
+        title = 'Es regnet' if r.state == 'raining' else 'Regen zieht auf'
+        return title, headline
     from brightsky.push.evaluator import level_title
     stage = stage or live.warning_stage(c.warning, now)
     return (level_title(c.level),
@@ -139,9 +179,12 @@ def _alert_text(c, now, stage=None):
 def _state(c, now):
     if c.kind == 'rain':
         r = c.rain
-        return {'event': 'rain', 'state': r.state,
-                'changeAt': r.change_at and r.change_at.isoformat(),
-                'class': r.peak_class}
+        state = {'event': 'rain', 'state': r.state,
+                 'changeAt': r.change_at and r.change_at.isoformat(),
+                 'class': r.peak_class}
+        if c.cell_key:
+            state['cell'] = c.cell_key      # the episode it belongs to
+        return state
     return {'event': c.event_key, 'level': c.level,
             'family': c.warning.family,
             'stage': live.warning_stage(c.warning, now),
@@ -179,29 +222,70 @@ def _stale(c, now):
     return stale                        # active: „Ende in …" ends at expiry
 
 
-async def start_or_take_over(conn, client, device, row, c, now):
-    """Returns True when the activity now carries `c`."""
+# A running activity takes over a new event by update only while it can
+# still carry it for this long: iOS ends an activity ~8 h after its start
+# (LIVE_LEAD), so a severe warning taking over a 7 h old rain card was cut
+# off within the hour (second review 2026-10-01).
+TAKE_OVER_MARGIN = datetime.timedelta(hours=2)
+
+
+async def _count_unconfirmed(conn, device_id, delta):
+    await conn.execute(
+        'UPDATE push.devices SET live_unconfirmed = '
+        'GREATEST(live_unconfirmed + $2, 0) WHERE id = $1', device_id, delta)
+
+
+async def start_or_take_over(conn, client, device, row, c, now,
+                             episodes=None, prior_episodes=None):
+    """Returns True when the activity now carries `c`. `episodes`: the
+    device's rain episodes to record with a new start (`started`);
+    `prior_episodes`: what to put back when the start fails or is given
+    up (`episodesBefore`)."""
     title, body = _alert_text(c, now)
     sound = _sound(c, now)
     content = _content(c, now)
     if active(row) and row['activity_token']:
-        # Take over the running activity by update (§17.5).
-        payload = payloads.live_update(
-            content, now=now, stale=_stale(c, now),
-            alert_title=title if sound else None, alert_body=body)
-        result = await _push(conn, client, device, row, payload,
-                             start=False, alert=sound, now=now,
-                             rule_id=c.rule_id, event_key=c.event_key,
-                             expiration=_expiration(c, now))
-        if result is not None and result.ok:
-            await _save(conn, device['id'], rule_id=c.rule_id,
-                        phase=c.kind, content=content, state=_state(c, now),
-                        now=now)
-            return True
+        young = now - row['started_at'] < live.LIVE_LEAD - TAKE_OVER_MARGIN
+        if young or not can_start(device):
+            # Take over the running activity by update (§17.5).
+            payload = payloads.live_update(
+                content, now=now, stale=_stale(c, now),
+                alert_title=title if sound else None, alert_body=body)
+            result = await _push(conn, client, device, row, payload,
+                                 start=False, alert=sound, now=now,
+                                 rule_id=c.rule_id, event_key=c.event_key,
+                                 expiration=_expiration(c, now))
+            if result is not None and result.ok:
+                await _save(conn, device['id'], rule_id=c.rule_id,
+                            phase=c.kind, content=content,
+                            state=_state(c, now), now=now)
+                return True
+        else:
+            # Too old to carry it to its end: end it, start a fresh one.
+            await end(conn, client, device, row, dict(row['last_content']),
+                      now, cooldown=False)
+            row = await load(conn, device['id'])
     if not can_start(device) or active(row):
         return False
+    state = _state(c, now)
+    if episodes is not None:
+        state['episodes'] = episodes
+    if prior_episodes is not None:
+        state['episodesBefore'] = prior_episodes
+    # The ids of the activities this one replaces: a late DELETE for one of
+    # them must not end this one (store.end_activity) — a stale dismissal
+    # would silence the new card's area for hours (review 2026-10-01).
+    ended = list(row['state'].get('endedIds') or ()) if row else []
+    if row is not None and row['activity_id']:
+        ended.append(row['activity_id'])
+    if ended:
+        state['endedIds'] = ended[-ENDED_IDS:]
     await _save(conn, device['id'], rule_id=c.rule_id, phase=c.kind,
-                content=content, state=_state(c, now), now=now, started=True)
+                content=content, state=state, now=now, started=True)
+    # Counted until the app proves a card arrived (UNCONFIRMED_STARTS) —
+    # before the push leaves, so a token report racing its answer is not
+    # overwritten; taken back when the start did not happen.
+    await _count_unconfirmed(conn, device['id'], 1)
     payload = payloads.live_start(
         content, now=now, stale=_stale(c, now), alert_title=title,
         alert_body=body, sound=sound)
@@ -218,10 +302,17 @@ async def start_or_take_over(conn, client, device, row, c, now):
             device['id'], {'pendingSince': now.isoformat()})
         return True
     if result is None or not result.ok:
+        await _count_unconfirmed(conn, device['id'], -1)
+        # A start that never happened opens no episode: the episodes are
+        # what they were before it.
         await conn.execute(
-            'UPDATE push.live_activities SET ended_at = $2 '
+            'UPDATE push.live_activities SET ended_at = $2, state = state '
+            "|| jsonb_build_object('episodes', $3::jsonb) "
+            """|| '{"abandoned": true}'::jsonb """
             'WHERE device_id = $1 AND activity_token IS NULL',
-            device['id'], now)
+            device['id'], now,
+            prior_episodes if prior_episodes is not None
+            else (episodes_of(row, now) if row else {}))
         return False
     logger.info('Device %s: started %s activity for %s', device['id'],
                 c.kind, c.event_key)
@@ -238,10 +329,20 @@ async def _abandon_unconfirmed(conn, device, row, now):
     if (row['activity_token'] is None and pending
             and now - datetime.datetime.fromisoformat(pending)
             >= PENDING_START):
+        # Most likely it never arrived: it opens no episode — the episodes
+        # are what they were before it (`episodesBefore`) — and it does not
+        # count as a start without proof. (A warning's cell is no rain
+        # episode.)
+        cell = row['state'].get('cell') if row['phase'] == 'rain' else None
         await conn.execute(
-            'UPDATE push.live_activities SET ended_at = $2 '
+            'UPDATE push.live_activities SET ended_at = $2, state = ('
+            "CASE WHEN state ? 'episodesBefore' THEN state || "
+            "jsonb_build_object('episodes', state -> 'episodesBefore') "
+            "ELSE state #- ARRAY['episodes', $3::text] END) "
+            """|| '{"abandoned": true}'::jsonb """
             'WHERE device_id = $1 AND activity_token IS NULL',
-            device['id'], now)
+            device['id'], now, cell or '')
+        await _count_unconfirmed(conn, device['id'], -1)
         logger.info('Device %s: start never confirmed, given up',
                     device['id'])
         return True
@@ -272,9 +373,11 @@ async def update(conn, client, device, row, c, now, *, alert=False,
 
 
 async def end(conn, client, device, row, content, now, *, cooldown=True,
-              marks=None):
+              marks=None, episodes=None):
     rule_id = row['rule_id'] and str(row['rule_id'])
     state = dict(row['state'])
+    if episodes is not None:
+        state['episodes'] = episodes
     payload = payloads.live_end(content, now=now,
                                 dismissal=now + live.DISMISS_AFTER)
     await _push(conn, client, device, row, payload, start=False,
@@ -307,79 +410,323 @@ def rain_due_update(row, rain, now):
     return changed and (escalated or not recent), escalated
 
 
+def _at(value):
+    return datetime.datetime.fromisoformat(value)
+
+
+def episodes_of(row, now):
+    """The device's rain episodes: {cell key: {'startedAt', 'lastWet',
+    'dismissedAt'?, 'heavy'?}} (ISO times), kept in the row's state across
+    activities. The row's own rain activity is folded in — its dismissal
+    too, which the push-api records on the row only — and entries older
+    than EPISODE_KEEP are dropped."""
+    if row is None:
+        return {}
+    eps = {cell: dict(e)
+           for cell, e in (row['state'].get('episodes') or {}).items()}
+    cell = row['state'].get('cell')
+    # A start that failed or was given up opened no episode.
+    if (row['phase'] == 'rain' and cell
+            and not row['state'].get('abandoned')):
+        e = eps.setdefault(cell, {})
+        e.setdefault('startedAt', row['started_at'].isoformat())
+        e.setdefault('lastWet', (row['last_update_at']
+                                 or row['started_at']).isoformat())
+        if row['state'].get('dismissed') and row['ended_at'] is not None:
+            e.setdefault('dismissedAt', row['ended_at'].isoformat())
+    return {cell: e for cell, e in eps.items()
+            if now - max(_at(e[k]) for k in ('startedAt', 'lastWet',
+                                               'dismissedAt') if k in e)
+            < live.EPISODE_KEEP}
+
+
+def area_of(eps, cell_key):
+    """The episode within RAIN_AREA_KM of `cell_key`, nearest first."""
+    here = parse_cell_key(cell_key)
+    near = [(firing._km(parse_cell_key(cell), here), cell) for cell in eps]
+    near = [n for n in near if n[0] <= firing.RAIN_AREA_KM]
+    return min(near)[1] if near else None
+
+
+async def _store_episodes(conn, device_id, eps):
+    await conn.execute(
+        'UPDATE push.live_activities SET state = state || '
+        "jsonb_build_object('episodes', $2::jsonb) WHERE device_id = $1",
+        device_id, eps)
+
+
+async def budget(conn, device_id, now):
+    """(pushes that lit the screen in the last hour, rain activity starts
+    in the last 24 h). A start without an answer (status 0) may have
+    arrived, so it counts."""
+    row = await conn.fetchrow(
+        """
+        SELECT
+          count(*) FILTER (WHERE sent_at > $2 AND apns_status = 200
+                           AND (push_type = 'alert' OR alerting)) AS hour,
+          count(*) FILTER (WHERE live_event = 'start'
+                           AND occurrence_key = 'rain'
+                           AND apns_status IN (0, 200)) AS starts
+        FROM push.notifications_sent
+        WHERE device_id = $1 AND sent_at > $3
+        """, device_id, now - datetime.timedelta(hours=1),
+        now - datetime.timedelta(hours=24))
+    return row['hour'], row['starts']
+
+
+async def told_recently(conn, device_id, cell_key, now):
+    """Did a rain notification for this area reach the device within
+    AREA_RESTART? An ordinary notification for rain elsewhere opens no
+    episode, so without this a capped episode there was told a second time
+    when the card left (replay 2026-10-01). The send log, not rule_state:
+    a fire dropped because the area was held also sets `fired_at`, though
+    nothing was told (final review). Card starts are the episodes' part."""
+    rows = await conn.fetch(
+        """
+        SELECT DISTINCT r.cell_key FROM push.notifications_sent n
+        JOIN push.rules r ON r.id = n.rule_id
+        WHERE n.device_id = $1 AND n.sent_at > $2 AND n.push_type = 'alert'
+          AND n.occurrence_key = 'rain' AND n.apns_status = 200
+        """, device_id, now - live.AREA_RESTART)
+    return area_of({r['cell_key']: {} for r in rows}, cell_key) is not None
+
+
+async def rain_notifications(conn, device_id, now):
+    """Rain notifications that reached the device in the last 24 h."""
+    return await conn.fetchval(
+        """
+        SELECT count(*) FROM push.notifications_sent
+        WHERE device_id = $1 AND sent_at > $2 AND push_type = 'alert'
+          AND occurrence_key = 'rain' AND apns_status = 200
+        """, device_id, now - datetime.timedelta(hours=24))
+
+
+@dataclass(frozen=True)
+class NotifyInstead:
+    """`rain_tick`'s answer when the daily cap allows no card for a new
+    episode: the worker tells it as a notification of `rule_id`, whether or
+    not that rule has re-armed (worker.force_rain)."""
+    cell_key: str
+    rule_id: str
+
+
+async def rain_gate(conn, device, eps, c, now):
+    """'start'; 'hold' — quiet on purpose, no notification either; 'cap' —
+    a new episode the daily cap allows no card for, told as a notification
+    instead (`NotifyInstead`); or 'limit' — the hourly limit allows no card,
+    the rain rule's ordinary notification goes (and meets the same limit).
+
+    Within its area's episode (rain seen in the last EPISODE_GAP, or a
+    start in the last AREA_RESTART) a candidate holds, unless it is the
+    episode's first heavy rain. After a dismissal it holds for the
+    episode and at least DISMISS_HOLD, heavy or not. Beyond that a new
+    episode would start, but the device's daily cap on rain starts or its
+    hourly limit may not allow a card: then the rain is a notification,
+    once per episode like any rain rule's (second review 2026-10-01: a
+    capped device heard nothing of new rain for the rest of the day)."""
+    area = area_of(eps, c.cell_key)
+    if area is not None:
+        e = eps[area]
+        open_ = now - _at(e['lastWet']) < live.EPISODE_GAP
+        dismissed = e.get('dismissedAt')
+        if dismissed and (open_ or now - _at(dismissed) < live.DISMISS_HOLD):
+            return 'hold'
+        recent = ('startedAt' in e
+                  and now - _at(e['startedAt']) < live.AREA_RESTART)
+        heavy_first = c.rain.heavy and not e.get('heavy')
+        if (open_ or recent) and not heavy_first:
+            return 'hold'
+    hour, starts = await budget(conn, device['id'], now)
+    # The hourly limit first: past it a capped episode would be recorded
+    # as notified and its notification then dropped (final review).
+    if hour >= settings.PUSH_MAX_ALERTS_PER_HOUR:
+        logger.info('Device %s: hourly limit reached at %s', device['id'],
+                    c.cell_key)
+        return 'limit'
+    if starts >= settings.PUSH_MAX_LIVE_STARTS_PER_DAY:
+        # Its notifications instead are capped alike: past the cap a device
+        # with several places got one per area every 3 h, more than an
+        # uncapped one (replay 2026-10-01). Beyond that only the rain
+        # rule's own once-per-phase notification goes ('limit').
+        if (await rain_notifications(conn, device['id'], now)
+                >= settings.PUSH_MAX_LIVE_STARTS_PER_DAY
+                or await told_recently(conn, device['id'],
+                                       c.cell_key, now)):
+            return 'limit'
+        logger.info('Device %s: %d rain activities in 24 h, a notification '
+                    'for %s instead', device['id'], starts, c.cell_key)
+        return 'cap'
+    return 'start'
+
+
+def _started(eps, c, now):
+    """`eps` with the candidate's area opened by a start."""
+    eps = {cell: dict(e) for cell, e in eps.items()}
+    area = area_of(eps, c.cell_key)
+    prior = eps.pop(area) if area is not None else {}
+    # Heavy rain alerts once per episode: a start within the same episode
+    # (its heavy exception) keeps the mark, a new episode starts without.
+    same_episode = ('lastWet' in prior
+                    and now - _at(prior['lastWet']) < live.EPISODE_GAP)
+    eps[c.cell_key] = {
+        'startedAt': now.isoformat(), 'lastWet': now.isoformat(),
+        'heavy': c.rain.heavy
+        or (same_episode and bool(prior.get('heavy')))}
+    return eps
+
+
+def _legacy_cooling(row, c, now):
+    """Rows from before the episodes: their cooldown, without the old
+    heavier-rain bypass."""
+    return (row is not None and row['phase'] == 'rain'
+            and row['cooldown_until'] and now < row['cooldown_until']
+            and row['state'].get('gone') in (None, c.rule_id))
+
+
 async def rain_tick(conn, client, device, candidate, rain, running_cell,
                     now):
     """One device's rain activity per nowcast cycle.
 
     `candidate`: the winning live rain event that may start an activity
-    (real rain within 60 min). `rain`: the nowcast at the running
-    activity's cell (`running_cell`), or None when there is no data. The
-    activity only ever shows its own place: a winner elsewhere ends it and
-    starts its own. Returns True when the candidate is carried live (or
-    held back on purpose), so no notification is needed for it.
+    (worker: real rain within 60 min, confirmed). `rain`: the nowcast at
+    the running activity's cell (`running_cell`), or None when there is no
+    data. Returns the cell key of the area the activity speaks for —
+    carried live, or held back on purpose — so that area gets no
+    notification; None otherwise.
+
+    One rain phase, one activity (review 2026-10-01): a running activity
+    keeps its place while it rains there, even when rain elsewhere comes
+    sooner, and its area's episode stays open after it ends — showers
+    within EPISODE_GAP start nothing, nor does a new shower within
+    AREA_RESTART of the start.
     """
     async with lock(device['id']):
         row = await load(conn, device['id'])
         if active(row) and row['phase'] == 'warning':
-            return False
+            return None
         if active(row):
             if await _abandon_unconfirmed(conn, device, row, now):
                 row = await load(conn, device['id'])
+        eps = episodes_of(row, now)
         if active(row):
-            same_place = (candidate is not None
-                          and candidate.cell_key == running_cell)
             rule_id = row['rule_id'] and str(row['rule_id'])
             # No cell: its rule was deleted or disabled (worker.RUNNING_SQL)
             gone = rule_id is None or running_cell is None
             # Both checked before „no data", so an orphaned row can never
             # stay active; the end shows whatever it shows now.
             if gone:
-                # The rule's return does not start it again with an alert
-                # during the cooldown: it may only have been missing from
-                # one registration. Another rule starts at once (below).
+                # The rule's return does not start it again: it may only
+                # have been missing from one registration (its episode
+                # holds, and its cooldown for rows from before). Another
+                # rule starts at once (below).
                 await end(conn, client, device, row,
                           dict(row['last_content']), now,
                           cooldown=rule_id is not None,
                           marks={'gone': rule_id} if rule_id else None)
                 row = await load(conn, device['id'])
-            elif now - row['started_at'] >= live.MAX_RAIN_LIFETIME:
-                # It ran its 4 h (§17.3)
-                await end(conn, client, device, row,
-                          dict(row['last_content']), now)
-                return same_place
-            elif rain is None:
-                return False    # no data: leave it alone, notify the rest
-            elif rain.state == 'ended':
-                # „Trocken für die nächsten 2 Stunden", then end (§4.5)
-                await end(conn, client, device, row,
-                          live.rain_content(rain, now, rule_id), now)
-                return same_place
-            elif candidate is not None and not same_place:
-                # Rain somewhere else wins: never switch place silently.
-                await end(conn, client, device, row,
-                          live.rain_content(rain, now, rule_id), now,
-                          cooldown=False)
-                row = await load(conn, device['id'])
+                eps = episodes_of(row, now)
+            elif rain is None and (
+                    now - row['started_at'] < live.MAX_RAIN_LIFETIME):
+                return None     # no data: leave it alone, notify the rest
             else:
-                c = live.Candidate(
-                    'rain', rule_id, now, rain=rain, cell_key=running_cell,
-                    context=candidate.context if candidate else None)
-                due, escalated = rain_due_update(row, rain, now)
-                if due:
-                    await update(conn, client, device, row, c, now,
-                                 alert=escalated and not live.is_night(now))
-                return same_place
+                wet = rain is not None and rain.state != 'ended'
+                if wet:
+                    e = eps.setdefault(running_cell, {
+                        'startedAt': row['started_at'].isoformat()})
+                    e['lastWet'] = now.isoformat()
+                elsewhere = (candidate is not None
+                             and area_of({running_cell: {}},
+                                         candidate.cell_key) is None)
+                if now - row['started_at'] >= live.MAX_RAIN_LIFETIME:
+                    # It ran its lifetime (§17.3), checked before „no data".
+                    # Its episode stays open, so it does not start again
+                    # while this rain lasts.
+                    await end(conn, client, device, row,
+                              dict(row['last_content']), now, episodes=eps)
+                elif not wet:
+                    # „Trocken für die nächsten 2 Stunden", then end (§4.5)
+                    await end(conn, client, device, row,
+                              live.rain_content(rain, now, rule_id), now,
+                              episodes=eps)
+                else:
+                    # Rain elsewhere, even sooner, does not take the card
+                    # away from rain here; it notifies on its own.
+                    c = live.Candidate(
+                        'rain', rule_id, now, rain=rain,
+                        cell_key=running_cell,
+                        context=None if candidate is None or elsewhere
+                        else candidate.context)
+                    due, _ = rain_due_update(row, rain, now)
+                    # The screen lights only for the episode's first heavy
+                    # rain; any other change is a quiet update (a card
+                    # flipping in and out of heavier rain alerted every
+                    # time — replay 2026-10-01). Not tied to the intensity
+                    # class rising: most cards start in the top class on a
+                    # single 5-min spike, so it could never rise again.
+                    heavy_now = rain.heavy and not e.get('heavy')
+                    due = due or heavy_now
+                    alert = heavy_now and not live.is_night(now)
+                    if alert:
+                        hour, _ = await budget(conn, device['id'], now)
+                        alert = hour < settings.PUSH_MAX_ALERTS_PER_HOUR
+                    if heavy_now:
+                        # told now — quietly at night or over the limit
+                        e['heavy'] = True
+                    await _store_episodes(conn, device['id'], eps)
+                    if due:
+                        await update(conn, client, device, row, c, now,
+                                     alert=alert)
+                    return running_cell
+                if not elsewhere:
+                    return running_cell
+                # It ended here; rain elsewhere may start its own (below).
+                row = await load(conn, device['id'])
         if candidate is None or candidate.rain.state == 'ended':
-            return False
-        cooling = (row is not None and row['phase'] == 'rain'
-                   and row['cooldown_until'] and now < row['cooldown_until']
-                   and candidate.rain.peak_class
-                   <= row['state'].get('class', 0)
-                   and row['state'].get('gone') in (None, candidate.rule_id))
-        if cooling:
-            return True    # quiet on purpose: no notification either
-        return await start_or_take_over(conn, client, device, row,
-                                        candidate, now)
+            return None
+        gone = row is not None and row['state'].get('gone')
+        if (gone and gone != candidate.rule_id and row['phase'] == 'rain'
+                and row['state'].get('cell')):
+            # The activity ended because its rule went away: that rule's
+            # return holds in its episode, but another rule starts at once.
+            # Only that activity's own episode: the `gone` mark stays on the
+            # row, and dropping whatever the area recorded since — a capped
+            # episode's notification — told it again every tick (replay
+            # 2026-10-01: 54 notifications on one device).
+            area = area_of(eps, candidate.cell_key)
+            if (area is not None and eps[area].get('startedAt')
+                    == row['started_at'].isoformat()):
+                del eps[area]
+        if _legacy_cooling(row, candidate, now) and not eps:
+            return candidate.cell_key
+        verdict = await rain_gate(conn, device, eps, candidate, now)
+        if verdict == 'hold':
+            # Held rain does not keep the episode open: only a card's own
+            # rain does (`lastWet`). Otherwise a showery day kept extending
+            # it and nothing was told until evening (review 2026-10-01: 47 %
+            # of the rain the old code told went untold).
+            return candidate.cell_key
+        if verdict == 'cap' and row is not None:
+            # A new episode, told once as a notification — recorded like a
+            # start, so AREA_RESTART and the episode hold it from now on.
+            # The rule's own re-arm (90 min clear) would wait for a dry
+            # spell showery weather never has (third review 2026-10-01).
+            eps = _started(eps, candidate, now)
+            # One notification per episode: it also uses up the heavy-rain
+            # exception — a device past its cap gets no second one when
+            # the rain turns heavy (replay: 75 areas told twice in 90 min).
+            eps[candidate.cell_key].update(notified=True, heavy=True)
+            await _store_episodes(conn, device['id'], eps)
+            return NotifyInstead(candidate.cell_key, candidate.rule_id)
+        if verdict in ('cap', 'limit'):
+            # told as a notification (its own limits apply); 'cap' without
+            # a row cannot record the episode, so it is not forced either
+            return None
+        if await start_or_take_over(conn, client, device, row, candidate,
+                                    now, episodes=_started(eps, candidate,
+                                                           now),
+                                    prior_episodes=eps):
+            return candidate.cell_key
+        return None
 
 
 # MARK: - Warnings

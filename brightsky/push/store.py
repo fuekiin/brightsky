@@ -163,6 +163,9 @@ async def _upsert_device(conn, device, secret_hash, now):
                           push.devices.push_to_start_token)
             ELSE excluded.push_to_start_token END,
           live_activities_enabled = excluded.live_activities_enabled,
+          -- The app runs: it reports the tokens of cards that arrived, so
+          -- its cards get another chance (livectl.UNCONFIRMED_STARTS).
+          live_unconfirmed = 0,
           environment = excluded.environment,
           tier = excluded.tier,
           app_version = excluded.app_version,
@@ -364,11 +367,17 @@ async def report_activity_token(conn, device_id, activity_id, token, now):
         ON CONFLICT (device_id) DO UPDATE SET
           activity_id = excluded.activity_id,
           activity_token = excluded.activity_token
-        WHERE push.live_activities.activity_id IS NULL
+        WHERE (push.live_activities.activity_id IS NULL
+               -- not a card the running one replaced (its late token would
+               -- send this card's updates to the old one)
+               AND NOT (COALESCE(push.live_activities.state -> 'endedIds',
+                                 '[]'::jsonb) ? excluded.activity_id))
            OR push.live_activities.activity_id = excluded.activity_id
            OR push.live_activities.ended_at IS NOT NULL
         """,
         device_id, activity_id, token, now)
+    # The device's cards do arrive (livectl.can_start)
+    await confirm_live(conn, device_id)
 
 
 async def end_activity(conn, device_id, activity_id, now, cooldown):
@@ -380,13 +389,33 @@ async def end_activity(conn, device_id, activity_id, now, cooldown):
     then ends that one (the only running activity without an id) and
     records the id."""
     status = await conn.execute(
-        _END_ACTIVITY + 'WHERE device_id = $1 AND activity_id = $2 '
-        'AND ended_at IS NULL', device_id, activity_id, now, now + cooldown)
+        _END_ACTIVITY.format(mark=_DISMISSED)
+        + 'WHERE device_id = $1 AND activity_id = $2 AND ended_at IS NULL',
+        device_id, activity_id, now, now + cooldown)
     if status == 'UPDATE 0':
+        # …unless the named id is one the running activity replaced: the app
+        # reports an old card's removal late, and that must not end — and
+        # silence the area of — the new one (review 2026-10-01). Even so,
+        # the app also reports cards the system removed, whose ids the
+        # server never learnt: for rain, an unnamed match ends the card but
+        # is no dismissal of its rain (no DISMISS_HOLD; the episode rules
+        # still hold the area). Warnings keep their dismissal.
         await conn.execute(
-            _END_ACTIVITY + 'WHERE device_id = $1 AND activity_id IS NULL '
-            'AND ended_at IS NULL', device_id, activity_id, now,
-            now + cooldown)
+            _END_ACTIVITY.format(mark=_DISMISSED_UNNAMED)
+            + 'WHERE device_id = $1 AND activity_id IS NULL '
+            'AND ended_at IS NULL '
+            "AND NOT (COALESCE(state -> 'endedIds', '[]'::jsonb) ? $2)",
+            device_id, activity_id, now, now + cooldown)
+    # A dismissal proves the app runs and its cards arrive
+    # (livectl.can_start).
+    await confirm_live(conn, device_id)
+
+
+async def confirm_live(conn, device_id):
+    await conn.execute(
+        'UPDATE push.devices SET live_confirmed = true, live_unconfirmed = 0 '
+        'WHERE id = $1 AND (NOT live_confirmed OR live_unconfirmed <> 0)',
+        device_id)
 
 
 _END_ACTIVITY = """
@@ -395,8 +424,12 @@ _END_ACTIVITY = """
       activity_token = NULL,
       ended_at = $3,
       cooldown_until = $4,
-      state = state || '{"dismissed": true}'::jsonb
+      state = state || {mark}
 """
+_DISMISSED = """'{"dismissed": true}'::jsonb"""
+_DISMISSED_UNNAMED = (
+    """CASE WHEN phase = 'rain' THEN '{"dismissedUnnamed": true}'::jsonb """
+    """ELSE '{"dismissed": true}'::jsonb END""")
 
 
 async def mark_source(conn, source, now, error=None):
@@ -417,3 +450,24 @@ async def mark_source(conn, source, now, error=None):
             ON CONFLICT (source) DO UPDATE SET
               last_attempt = $2, last_error = $3
             """, source, now, re.sub(r'https?://\S+', '<url>', error)[:500])
+
+
+# Columns this code needs (migration 0024). push-work does not migrate: the
+# `worker` container does, so a push-work restarted first would fail every
+# delivery (review 2026-10-01).
+REQUIRED_COLUMNS = (
+    ('notifications_sent', 'live_event'),
+    ('notifications_sent', 'alerting'),
+    ('devices', 'live_unconfirmed'),
+    ('devices', 'live_confirmed'),
+)
+
+
+async def missing_columns(conn):
+    rows = await conn.fetch(
+        """
+        SELECT table_name, column_name FROM information_schema.columns
+        WHERE table_schema = 'push'
+        """)
+    have = {(r['table_name'], r['column_name']) for r in rows}
+    return [c for c in REQUIRED_COLUMNS if c not in have]

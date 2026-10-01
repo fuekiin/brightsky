@@ -56,6 +56,9 @@ PUSH_APNS_KEY_PATH = ''
 PUSH_APNS_TEAM_ID = ''
 PUSH_APNS_TOPIC = 'de.nano-wetter.app'
 PUSH_MAX_ALERTS_PER_HOUR = 10
+# Rain Live Activity starts per device in any 24 hours (a safety net; the
+# episode rules in push/live.py keep it well below)
+PUSH_MAX_LIVE_STARTS_PER_DAY = 3
 # Distinct cells across all devices; /health warns from 80 %
 PUSH_MAX_CELLS = 20000
 PUSH_MAX_RULES_PER_DEVICE = 50

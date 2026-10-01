@@ -63,7 +63,8 @@ def rule_from_row(row):
 RULES_SQL = """
     SELECT r.*, c.lat, c.lon, c.warn_cell_id,
            d.id AS d_id, d.apns_token, d.environment,
-           d.push_to_start_token, d.live_activities_enabled
+           d.push_to_start_token, d.live_activities_enabled,
+           d.live_unconfirmed, d.live_confirmed
     FROM push.rules r
     JOIN push.cells c USING (cell_key)
     JOIN push.devices d ON d.id = r.device_id
@@ -76,7 +77,8 @@ RULES_SQL = """
 DIGEST_SQL = """
     SELECT r.*, c.lat, c.lon, c.warn_cell_id,
            d.id AS d_id, d.apns_token, d.environment,
-           d.push_to_start_token, d.live_activities_enabled
+           d.push_to_start_token, d.live_activities_enabled,
+           d.live_unconfirmed, d.live_confirmed
     FROM push.rules r
     JOIN push.cells c USING (cell_key)
     JOIN push.devices d ON d.id = r.device_id
@@ -101,7 +103,9 @@ def device_of(row):
     return {'id': row['d_id'], 'apns_token': row['apns_token'],
             'environment': row['environment'],
             'push_to_start_token': row['push_to_start_token'],
-            'live_activities_enabled': row['live_activities_enabled']}
+            'live_activities_enabled': row['live_activities_enabled'],
+            'live_unconfirmed': row.get('live_unconfirmed') or 0,
+            'live_confirmed': row.get('live_confirmed', True)}
 
 
 # A running activity whose rule is disabled (missing from the device's last
@@ -114,7 +118,8 @@ RUNNING_SQL = """
            r.id AS rule_id, r.cell_key, r.params AS rule_params,
            c.warn_cell_id, c.lat, c.lon,
            d.id AS d_id, d.apns_token, d.environment,
-           d.push_to_start_token, d.live_activities_enabled
+           d.push_to_start_token, d.live_activities_enabled,
+           d.live_unconfirmed, d.live_confirmed
     FROM push.live_activities la
     JOIN push.devices d ON d.id = la.device_id
     LEFT JOIN push.rules r ON r.id = la.rule_id AND r.enabled
@@ -199,6 +204,72 @@ def warning_status(row, alert_ids, obs):
             w.family == family for w in obs.lookup(row['warn_cell_id'])):
         return 'here'
     return 'unknown'
+
+
+# rule_state occurrence of a live rain rule whose start waits for a second
+# radar frame (`confirmed`); fired_at is the first frame that showed it.
+LIVE_SEEN = 'liveSeen'
+LIVE_SEEN_KEEP = datetime.timedelta(hours=6)
+
+
+def confirmed(rain, seen, now):
+    """May this rain start an activity now? At once when it already rains
+    or the rain is heavy; otherwise only when an earlier radar frame
+    showed it too — one frame's shower often vanishes in the next one
+    (review 2026-10-01)."""
+    return (rain.state == 'raining' or rain.heavy
+            or (seen is not None
+                and now - seen['fired_at'] >= live.CONFIRM_AFTER))
+
+
+async def mark_seen(conn, new, gone, now):
+    if new:
+        await conn.execute(
+            """
+            INSERT INTO push.rule_state (
+              rule_id, occurrence_key, state, fired_at, expires_at)
+            SELECT id, $2, '{}'::jsonb, $3, $4 FROM unnest($1::uuid[]) id
+            ON CONFLICT (rule_id, occurrence_key) DO NOTHING
+            """, new, LIVE_SEEN, now, now + LIVE_SEEN_KEEP)
+    if gone:
+        await conn.execute(
+            'DELETE FROM push.rule_state '
+            'WHERE occurrence_key = $2 AND rule_id = ANY($1::uuid[])',
+            gone, LIVE_SEEN)
+
+
+def hold_decisions(decided, waiting, carried):
+    """For devices whose live rain start waits for its second frame
+    (`waiting`: device → cell) and that no activity carries: the rain rules
+    of that area neither fire nor write state this tick."""
+    for rule, row, decision in decided:
+        device_id = str(row['d_id'])
+        cell = waiting.get(device_id)
+        if cell is None or device_id in carried:
+            continue
+        if firing._km(rule.lat_lon, rulemod.parse_cell_key(cell)) \
+                <= firing.RAIN_AREA_KM:
+            decision.fires = []
+            decision.writes = {}
+
+
+def force_rain(decided, forced, matches, now):
+    """A new episode the daily cap allows no card for is told once as a
+    notification of the rule that would have started it — whether or not
+    that rule has re-armed: its re-arm waits for 90 min without rain, which
+    showery weather never has (third review 2026-10-01: the fallback caught
+    1 capped phase in 5). livectl recorded the episode, so it is told once.
+    `forced`: device → livectl.NotifyInstead."""
+    for rule, row, decision in decided:
+        f = forced.get(str(row['d_id']))
+        if f is None or rule.id != f.rule_id or decision.fires:
+            continue
+        match = matches.get(rule.id)
+        if match is None:
+            continue
+        decision.fires.append(firing.Fire(
+            rule.id, 'rain', f'rain:{rule.cell_key}', match.evidence, 'new'))
+        decision.writes['rain'] = ({'armed': False}, now, None)
 
 
 def drop_carried(decided, carried):
@@ -464,6 +535,9 @@ class Worker:
             states = await load_states(conn, [r['id'] for r in rows])
             decided = []
             candidates = {}
+            seen_new, seen_gone = [], []
+            waiting = {}     # device → cell of a start awaiting its frame
+            matches = {}     # rule id → its rain match this tick
             for row in rows:
                 if row['cell_key'] not in points:
                     continue   # no data: neither fire nor re-arm
@@ -483,24 +557,51 @@ class Worker:
                     hours = (await self.hours_for(row, now)
                              if rule.values else [])
                     match = ev.rain_match(rule, rain, hours, now)
+                    matches[rule.id] = match
                     clear = (rain.first_rain_at is None
                              and rain.state != 'raining')
                     decision = firing.decide_rain(
                         rule, match, states.get(rule.id, {}), now, clear)
-                    decided.append((rule, row, decision))
+                    # A live rule on a device that can show its card speaks
+                    # through the card only: rain too short for one is not
+                    # told, and the rule stays armed — if it grows, the card
+                    # tells it (a notification followed by a card for the
+                    # same rain 1,588 times in the 1 Oct replay).
+                    # Only the fire (and its „told" write) is dropped; any
+                    # other bookkeeping — rain resetting `clearSince` —
+                    # still happens.
+                    quiet = (row['live'] is not None and match is not None
+                             and bool(decision.fires)
+                             and not rain.may_start
+                             and livectl.can_start(device_of(row)))
+                    if not quiet:
+                        decided.append((rule, row, decision))
                     if row['live'] is not None:
                         candidates.setdefault(device_id, (row, []))
                         soon = rain.state == 'raining' or (
                             rain.first_rain_at is not None
                             and rain.first_rain_at
                             <= now + live.START_WITHIN)
-                        # the activity starts only where a match exists
-                        if soon and match is not None:
-                            candidates[device_id][1].append(live.Candidate(
-                                'rain', rule.id, rain.first_rain_at or now,
-                                rain=rain, context=match.context,
-                                cell_key=rule.cell_key))
+                        seen = states.get(rule.id, {}).get(LIVE_SEEN)
+                        # the activity starts only where a match exists,
+                        # and only on rain that holds up (`confirmed`)
+                        if soon and match is not None and rain.may_start:
+                            if confirmed(rain, seen, now):
+                                candidates[device_id][1].append(
+                                    live.Candidate(
+                                        'rain', rule.id,
+                                        rain.first_rain_at or now,
+                                        rain=rain, context=match.context,
+                                        cell_key=rule.cell_key))
+                            elif livectl.can_start(device_of(row)):
+                                waiting.setdefault(device_id, rule.cell_key)
+                                if seen is None:
+                                    seen_new.append(rule.id)
+                        elif seen is not None:
+                            seen_gone.append(rule.id)
+            await mark_seen(conn, seen_new, seen_gone, now)
             carried = {}
+            forced = {}      # device → livectl.NotifyInstead
             for device_id in set(candidates) | set(running):
                 with isolated('live rain for device', device_id):
                     row, cands = candidates.get(device_id, (None, []))
@@ -517,14 +618,25 @@ class Worker:
                             current = live.analyze_rain(
                                 points[running_cell], now, in_phase=True,
                                 threshold=rain_threshold(r['rule_params']))
-                    if await livectl.rain_tick(conn, self.client, device,
-                                               winner, current, running_cell,
-                                               now) and winner:
-                        carried[device_id] = winner.cell_key
+                    told = await livectl.rain_tick(
+                        conn, self.client, device, winner, current,
+                        running_cell, now)
+                    if isinstance(told, livectl.NotifyInstead):
+                        forced[device_id] = told
+                    elif told is not None:
+                        carried[device_id] = told
+            # A start waiting for its second frame is not told as a
+            # notification meanwhile — the activity will tell it, or it was
+            # a one-frame ghost. Its area decides nothing this tick, so the
+            # rules stay armed for whatever comes next.
+            forced_cells = {d: f.cell_key for d, f in forced.items()}
+            hold_decisions(decided, waiting, {**carried, **forced_cells})
+            force_rain(decided, forced, matches, now)
             # The activity is the notification for its own area; elsewhere,
             # and without an activity, rain is told once per device and area
             # (a chosen place before „Mein Standort").
-            firing.dedupe_rain(decided, states, carried)
+            firing.dedupe_rain(decided, states, carried, now,
+                               forced=forced_cells)
             await dispatch_all(conn, self.client, decided, now)
             await store.mark_source(conn, 'nowcast', now)
         self._radar_seen, self._nowcast_at = newest, now
@@ -701,6 +813,12 @@ async def run():
         logger.warning('%s — running in dry-run mode', e)
         client = DryRunClient()
     async with store.pool(max_size=4) as pool, sources.http_client() as http:
+        async with pool.acquire() as conn:
+            missing = await store.missing_columns(conn)
+        if missing:
+            raise SystemExit(
+                f'push schema is missing {missing}: run the migrations '
+                '(the worker container, `--migrate`) before push-work')
         worker = Worker(pool, http, client)
         tasks = [
             asyncio.create_task(worker.loop(

@@ -21,12 +21,41 @@ HEAVY_MM_PER_5MIN = 5 / 12        # Starkregen: ≥ 5 mm/h
 START_WITHIN = datetime.timedelta(minutes=60)
 ALERT_WITHIN = datetime.timedelta(minutes=15)
 GAP_KEEPS_PHASE = datetime.timedelta(minutes=20)
-MAX_RAIN_LIFETIME = datetime.timedelta(hours=4)
+# A card runs while its rain lasts, up to just under the ~8 h iOS keeps an
+# activity: with episodes, ending it at 4 h left the rest of a long rain
+# untold (review 2026-10-01; 23 % of cards in the 1 Oct replay).
+MAX_RAIN_LIFETIME = datetime.timedelta(hours=7, minutes=30)
 LIVE_LEAD = datetime.timedelta(hours=8)    # RuleEvaluator.liveLead
 COOLDOWN = datetime.timedelta(minutes=60)
 DISMISS_AFTER = datetime.timedelta(minutes=15)
 UPDATE_BUDGET = datetime.timedelta(minutes=10)
 CHANGE_MOVED = datetime.timedelta(minutes=5)
+
+# One rain phase, one activity (review 2026-10-01: showers restarted the
+# activity after every 60-min cooldown). An episode is the rain of one area
+# (RAIN_AREA_KM): it stays open while rain is expected or was seen in the
+# last EPISODE_GAP, and while it is open a new shower updates nothing and
+# starts nothing — except once for heavy rain.
+EPISODE_GAP = datetime.timedelta(minutes=90)
+# However the episode went: no second start in an area within this.
+AREA_RESTART = datetime.timedelta(hours=3)
+# A dismissal silences the area's rain for the episode, and at least this.
+DISMISS_HOLD = datetime.timedelta(hours=3)
+# Episode bookkeeping older than this is dropped.
+EPISODE_KEEP = datetime.timedelta(hours=12)
+# What may start an activity, unless it is heavy: real rain of at least
+# 15 min, seen in two radar frames (a single frame's shower often vanishes
+# in the next one — 2,428 activities on 1 Oct lived under 10 min).
+START_MIN_STEPS = 3
+CONFIRM_AFTER = datetime.timedelta(minutes=4)
+# Heavy enough for the episode's one exception (a start, or an alerting
+# update): ≥ 10 mm/h for ≥ 10 min. One 5-min step ≥ 5 mm/h (class 2) is
+# common in an ordinary shower — in the 1 Oct replay such starts announced
+# „Leichter Regen", and a card flipping in and out of it alerted again and
+# again (replay review 2026-10-01).
+HEAVY_RAIN_MM_PER_5MIN = 10 / 12
+HEAVY_MIN_STEPS = 2
+HEAVY_WITHIN = datetime.timedelta(minutes=60)
 NUMBER_WORDS = ['null', 'ein', 'zwei', 'drei', 'vier', 'fünf', 'sechs',
                 'sieben', 'acht', 'neun', 'zehn', 'elf', 'zwölf']
 
@@ -67,10 +96,32 @@ class RainNow:
     peak_at: datetime.datetime | None
     first_rain_at: datetime.datetime | None   # real rain, ≥ 10 min
     duration_minutes: int
+    first_run_steps: int = 0     # 5-min steps of the first real rain
 
     @property
     def peak_class(self):
         return intensity_class(self.peak)
+
+    @property
+    def heavy_at(self):
+        """Start of the first HEAVY_MIN_STEPS steps in a row of
+        HEAVY_RAIN_MM_PER_5MIN within HEAVY_WITHIN, else None. Not further
+        out: the far end of the nowcast is its least reliable part."""
+        near = self.buckets[:HEAVY_WITHIN // STEP]
+        for i, n in _runs(m >= HEAVY_RAIN_MM_PER_5MIN for m in near):
+            if n >= HEAVY_MIN_STEPS:
+                return self.bucket_start + i * STEP
+        return None
+
+    @property
+    def heavy(self):
+        return self.heavy_at is not None
+
+    @property
+    def may_start(self):
+        """Enough to start an activity on (the second frame aside):
+        heavy rain, or real rain of at least START_MIN_STEPS."""
+        return self.heavy or self.first_run_steps >= START_MIN_STEPS
 
 
 def _runs(flags):
@@ -111,7 +162,8 @@ def analyze_rain(points, now, in_phase=False, threshold=RAIN_MM_PER_5MIN):
     # that has begun: one noisy step is not a shower.
     raining = any(i <= 1 and at[i] <= now for i, _ in real)
     base = dict(bucket_start=start, buckets=tuple(mm), peak=peak,
-                peak_at=peak_at, first_rain_at=first_rain_at)
+                peak_at=peak_at, first_rain_at=first_rain_at,
+                first_run_steps=real[0][1] if real else 0)
     label = f'{intensity_label(peak)}er Regen'
     if raining:
         # Dry again at the first dry spell of ≥ 20 min; shorter gaps keep
@@ -278,6 +330,9 @@ def winner(candidates, now):
     eligible = [c for c in candidates if c.start <= now + LIVE_LEAD]
     if not eligible:
         return None
+    # Ties by place and rule, never by the order rows came from the
+    # database (review 2026-10-01: ties flipped between places).
     return min(eligible, key=lambda c: (
         0 if c.level >= 4 else 1 if c.level >= 3 else 2,
-        0 if c.kind == 'warning' else 1, c.start))
+        0 if c.kind == 'warning' else 1, c.start, c.cell_key or '',
+        c.rule_id))

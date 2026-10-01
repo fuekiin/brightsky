@@ -206,8 +206,14 @@ def test_rain_rearms_only_when_the_nowcast_is_clear():
     # drifts past the horizon: no match, but rain still on the radar
     assert not step(None, False, NOW + 5 * M)
     assert not step(rain_match(55), False, NOW + 10 * M)
-    assert not step(None, True, NOW + 15 * M)      # clear: re-arms
-    assert step(rain_match(40), False, NOW + 20 * M)
+    # One clear frame between two of the same rain's frames is not a new
+    # rain (review 2026-10-01): clear must last 90 minutes.
+    assert not step(None, True, NOW + 15 * M)
+    assert not step(rain_match(40), False, NOW + 20 * M)
+    assert not step(None, True, NOW + 25 * M)        # clear starts over
+    assert not step(None, True, NOW + 25 * M + 89 * M)
+    assert not step(None, True, NOW + 25 * M + 90 * M)   # re-arms
+    assert step(rain_match(40), False, NOW + 25 * M + 95 * M)
 
 
 def test_two_rain_rules_at_one_place_make_one_notification(push_db,
@@ -494,11 +500,13 @@ def test_r1_lifetime_is_checked_before_missing_data(push_db, monkeypatch):
         raise RuntimeError('radar down')
     monkeypatch.setattr(sources.NowcastSource, 'fetch_all', fail)
     with pytest.raises(RuntimeError):
-        run(push_db, ntick(NOW + 4 * H + M), stub, monkeypatch)
+        run(push_db, ntick(NOW + live.MAX_RAIN_LIFETIME + M), stub,
+            monkeypatch)
     # every lookup failed, so the tick raised before any activity work;
-    # with one cell still answering, the 4 h limit ends the stale one:
+    # with one cell still answering, the lifetime ends the stale one:
     radar(monkeypatch, [0.2] * 24)
-    run(push_db, ntick(NOW + 4 * H + 2 * M), stub, monkeypatch)
+    run(push_db, ntick(NOW + live.MAX_RAIN_LIFETIME + 2 * M), stub,
+        monkeypatch)
     assert bodies(stub)[-1][2]['aps']['event'] == 'end'
 
 
@@ -558,9 +566,13 @@ def test_r4_dead_activity_token_counts_as_dismissal(push_db, monkeypatch):
     assert ended is False and state['dismissed'] is True
 
 
-def test_r5_rain_elsewhere_ends_and_starts_its_own(push_db, monkeypatch):
-    """Another rule's rain wins: the running activity is ended and the
-    winner gets its own — never another place's content on this one."""
+def test_r5_rain_elsewhere_does_not_take_the_card_away(push_db,
+                                                     monkeypatch):
+    """Review 2026-10-01 (cards switching places every few minutes): the
+    activity keeps its place while rain is still expected there. Rain
+    elsewhere, even sooner, is told as a notification; once the place is
+    dry, the other place gets its own activity in the same tick — never
+    another place's content on this one."""
     stub = StubAPNs()
     berlin_rule = dict(rain_rule(), id='00000000-0000-0000-0000-0000000000b2',
                        cellKey='52.52,13.41')
@@ -579,8 +591,13 @@ def test_r5_rain_elsewhere_ends_and_starts_its_own(push_db, monkeypatch):
     by_lat[53.55] = [0] * 12 + [0.2] * 12
     by_lat[52.52] = [0.2] * 24
     run(push_db, ntick(NOW + 5 * M), stub, monkeypatch)
-    lives = [b[2]['aps'] for b in bodies(stub)
-             if b[0] == 'liveactivity']
+    lives = [b[2]['aps'] for b in bodies(stub) if b[0] == 'liveactivity']
+    assert [a['event'] for a in lives] == ['start']
+    assert [b[0] for b in bodies(stub)] == ['liveactivity', 'alert']
+    # Hamburg dry for two hours: its card ends, Berlin's starts.
+    by_lat[53.55] = [0] * 24
+    run(push_db, ntick(NOW + 10 * M), stub, monkeypatch)
+    lives = [b[2]['aps'] for b in bodies(stub) if b[0] == 'liveactivity']
     assert [a['event'] for a in lives] == ['start', 'end', 'start']
     assert lives[-1]['content-state']['ruleId'] == berlin_rule['id']
 
@@ -950,6 +967,7 @@ def test_rain_stale_date_is_the_change_when_it_comes_first(push_db,
     stub = StubAPNs()
     run(push_db, register_live([rain_rule()]), stub, monkeypatch)
     radar(monkeypatch, [0.2 if 4 <= i <= 12 else 0 for i in range(24)])
+    run(push_db, ntick(NOW - 5 * M), stub, monkeypatch)   # first frame
     run(push_db, ntick(NOW), stub, monkeypatch)
     aps = bodies(stub)[-1][2]['aps']
     assert aps['event'] == 'start'
@@ -1316,9 +1334,10 @@ def test_review6_rain_elsewhere_opens_as_coming(push_db, monkeypatch):
     monkeypatch.setattr(sources.NowcastSource, 'fetch_all', fetch_all)
     run(push_db, ntick(NOW), stub, monkeypatch)          # Hamburg starts
     report_token(push_db)
-    by_lat[53.55] = [0] * 12 + [0.2] * 12                # Hamburg: in 60
-    by_lat[52.52] = [0] * 3 + [0.2] * 21                 # Berlin: in 15
-    run(push_db, ntick(NOW + 5 * M), stub, monkeypatch)
+    by_lat[53.55] = [0] * 24                             # Hamburg: dry
+    by_lat[52.52] = [0] * 4 + [0.2] * 20                 # Berlin: in 15
+    run(push_db, ntick(NOW + 5 * M), stub, monkeypatch)  # first frame
+    run(push_db, ntick(NOW + 10 * M), stub, monkeypatch)
     start = bodies(stub)[-1][2]['aps']
     assert start['event'] == 'start'
     assert start['content-state']['ruleId'] == berlin_rule['id']

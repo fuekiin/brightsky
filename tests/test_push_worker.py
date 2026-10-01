@@ -272,9 +272,12 @@ def ntick(at):
 
 
 def report_token(push_db, token='ef' * 32):
+    """As the app's PUT /activity does (store.report_activity_token): the
+    token, and the device's cards count as arriving."""
     with push_db.cursor() as cur:
         cur.execute("UPDATE push.live_activities SET activity_token = %s, "
                     "activity_id = 'X'", (token,))
+        cur.execute("UPDATE push.devices SET live_unconfirmed = 0")
     push_db.commit()
 
 
@@ -287,6 +290,11 @@ def test_rain_activity_starts_updates_quietly_and_ends(push_db, monkeypatch):
     stub = StubAPNs()
     run(push_db, register_live([rain_rule()]), stub, monkeypatch)
     radar(monkeypatch, [0.2 if 4 <= i <= 12 else 0 for i in range(24)])
+    # Rain still 25 min away shows in one radar frame only: wait for the
+    # next one, and tell nothing meanwhile.
+    run(push_db, ntick(NOW - datetime.timedelta(minutes=5)), stub,
+        monkeypatch)
+    assert stub.requests == []
     run(push_db, ntick(NOW), stub, monkeypatch)
     [(push_type, token, payload)] = bodies(stub)
     assert (push_type, token) == ('liveactivity', 'cd')

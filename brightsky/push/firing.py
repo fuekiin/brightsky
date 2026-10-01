@@ -126,18 +126,49 @@ def decide_rain(rule, match, states, now, clear):
     would report the same shower again as it drifts across the edge. The
     event is keyed by place, so several rain rules at one place make one
     notification, as the app keys its card „rain" per place.
+
+    Clear must also last REARM_AFTER_CLEAR: one dry radar frame between
+    two of a shower's frames re-armed it and told the same rain again
+    (review 2026-10-01). `clearSince` records when the clear began; any
+    rain in between starts it over.
     """
     d = Decision()
     row = states.get('rain')
-    armed = row is None or row['state'].get('armed', False)
+    armed = rain_armed(row, now)
+    since = row is not None and row['state'].get('clearSince')
     if match is not None:
         if armed:
             d.fires.append(Fire(rule.id, 'rain', f'rain:{rule.cell_key}',
                                 match.evidence, 'new'))
             d.writes['rain'] = ({'armed': False}, now, None)
-    elif clear and not armed:
+        elif since:
+            d.writes['rain'] = ({'armed': False}, row['fired_at'], None)
+    elif armed:
+        pass
+    elif not clear:
+        if since:
+            d.writes['rain'] = ({'armed': False}, row['fired_at'], None)
+    elif not since:
+        d.writes['rain'] = ({'armed': False, 'clearSince': now.isoformat()},
+                            row['fired_at'], None)
+    elif now - datetime.datetime.fromisoformat(since) >= REARM_AFTER_CLEAR:
         d.writes['rain'] = ({'armed': True}, row['fired_at'], None)
     return d
+
+
+# Rain must stay clear this long before a rain rule reports again.
+REARM_AFTER_CLEAR = datetime.timedelta(minutes=90)
+
+
+def rain_armed(row, now):
+    """May this rain rule report? Clear for REARM_AFTER_CLEAR counts even
+    when no clear tick came at its end (a gap in the radar, or the first
+    tick after the dry spell already sees rain)."""
+    if row is None or row['state'].get('armed', False):
+        return True
+    since = row['state'].get('clearSince')
+    return bool(since and now - datetime.datetime.fromisoformat(since)
+                >= REARM_AFTER_CLEAR)
 
 
 # MARK: - One warning, one notification per device
@@ -248,7 +279,7 @@ def rain_areas(rules):
     return list(areas.values())
 
 
-def dedupe_rain(decided, states, carried=None):
+def dedupe_rain(decided, states, carried=None, now=None, forced=None):
     """Rain notifications once per device and AREA (rules within
     RAIN_AREA_KM, `rain_areas`) — never across areas: rain in München is
     news even while Berlin's activity runs or Hamburg's rain was told.
@@ -263,6 +294,9 @@ def dedupe_rain(decided, states, carried=None):
     Mutates the decisions.
     """
     carried = carried or {}
+    # device → cell of a notification forced for a capped new episode
+    # (worker.force_rain): its area counts as not told
+    forced = forced or {}
     order = {'light': 0, 'moderate': 1, 'heavy': 2}
     by_device = {}
     for item in decided:
@@ -280,10 +314,15 @@ def dedupe_rain(decided, states, carried=None):
             if not fired:
                 continue
             told = any(
-                st['state'].get('armed') is False
+                not rain_armed(st, now) if now is not None
+                else st['state'].get('armed') is False
                 for rule in area
                 for key, st in states.get(rule.id, {}).items()
                 if key == 'rain')
+            f = forced.get(device_id)
+            if f and any(_km(rule.lat_lon, parse_cell_key(f))
+                         <= RAIN_AREA_KM for rule in area):
+                told = False
             winner = None if told else min(fired, key=lambda x: (
                 x[0].at_current_location, order[x[0].rain_min], x[0].id))
             for rule, fire in fired:

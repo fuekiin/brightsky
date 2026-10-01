@@ -261,6 +261,119 @@ Not changed:
 - **The digest does not apply the per-area rain dedupe.** The digest is one notification
   anyway; its `items` are per rule, for the extension to name.
 
+## Rain Live Activities: one rain phase, one activity (2026-10-01)
+
+Production on 2026-10-01 (a showery day): 16,147 rain activity starts on ~4,000 devices, up to 36
+for one device; showers restarted the activity after every 60-min cooldown, cards switched places
+within minutes, dismissals were ignored for rain, starts never counted toward the hourly limit, and
+74 % of activities never reported a token, so their ends never arrived and new starts stacked
+(analysis by the nano-backend session, read-only). What changed (`push/live.py`, `push/livectl.py`,
+`push/worker.py`, `push/firing.py`; tests `tests/test_push_episodes.py`):
+
+- **Episodes.** A rain episode is the rain of one area (`firing.RAIN_AREA_KM`), recorded in
+  `live_activities.state.episodes` (`{cell: startedAt, lastWet, dismissedAt?, heavy?}`), which
+  outlives any one activity. Within `EPISODE_GAP` (90 min) of the last rain a card showed
+  (`lastWet` — only a card's own rain sets it; held showers do not extend it, or a showery day kept
+  the area silent until evening), and within `AREA_RESTART` (3 h) of the area's last start, a new
+  shower starts nothing and is not told as a notification either. Exception: the episode's first heavy rain starts once. Heavy
+  means ≥ 10 mm/h for ≥ 10 min (`live.HEAVY_RAIN_MM_PER_5MIN`, `HEAVY_MIN_STEPS`): one 5-min step
+  over 5 mm/h is common in an ordinary shower.
+- **One heavy alert per episode.** On a running card an escalation lights the screen only for the
+  episode's first heavy rain (the same mark as the start exception); every other change is a quiet
+  update. Before, a card flipping in and out of heavier rain alerted on every flip.
+- **Lifetime.** A card runs while its rain lasts, up to `MAX_RAIN_LIFETIME` (7.5 h, under the ~8 h
+  iOS keeps it; it was 4 h, which with episodes left the rest of a long rain untold). Its end does not
+  end the episode: the same rain does not restart it.
+- **Dismissal** (app DELETE, or a dead activity token) silences the area's rain for the episode and
+  at least `DISMISS_HOLD` (3 h), heavy rain included, with no notification instead. A late DELETE
+  for a card that a newer one replaced (`state.endedIds`, the last 5 ids; kept across updates with
+  the episodes, `livectl.STICKY`) no longer ends the newer card, and a late token for one is not
+  attached to it. A DELETE naming an id the server never learnt still ends a token-less card
+  (`store.end_activity`'s fallback), but for rain it is no dismissal of the rain
+  (`dismissedUnnamed`): the app also reports cards the system removed.
+- **Alert texts.** A start or update that lights the screen for heavy rain says so: title
+  „Kräftiger Regen", body e.g. „Regen in 5 Min. · kräftig ab 14:25" or „Trocken in 40 Min. ·
+  jetzt kräftig" (not „Starkregen": DWD's warning term, from 15 mm/h). A start while it rains is
+  titled „Es regnet", not „Regen zieht auf". Heavy is judged within the next 60 min only
+  (`HEAVY_WITHIN`).
+- **Cards that never arrive.** A device that never proved its cards arrive — no token report and no
+  dismissal, ever (`devices.live_confirmed`, backfilled by 0024) — falls back to notifications after
+  `livectl.UNCONFIRMED_STARTS` (2) starts in a row without either (`devices.live_unconfirmed`,
+  counted before the push leaves, taken back for a refused or given-up start; a registration resets
+  it). A confirmed device never falls back: the app reports dismissals even where it fails to report
+  tokens, and a plain counter would have moved 55 % of card devices to notifications.
+- **Warnings and old cards.** A warning takes over a running card by update only while that card is
+  younger than `LIVE_LEAD` − `TAKE_OVER_MARGIN` (6 h); an older one is ended and the warning gets a
+  fresh card — iOS ends an activity ~8 h after its start.
+- **Place.** A running activity keeps its place while rain is expected there; rain elsewhere, even
+  sooner, is a notification. Once the place is dry the activity ends and rain elsewhere may start
+  its own in the same tick. Ties between places are decided by cell and rule id, not row order.
+- **What may start:** real rain of at least 15 min (`START_MIN_STEPS`), seen in two radar frames
+  (`liveSeen` in `rule_state`); heavy rain and rain already falling start at once. While a start
+  waits for its second frame, its area decides nothing (no notification, no state written).
+- **A live rule speaks through its card.** On a device that can show cards, rain too short for one
+  is not told at all, and the rule stays armed: if the shower grows, the card tells it. Without
+  push-to-start or with Live Activities off, rain is an ordinary notification as before.
+- **Without a token** a running activity cannot be updated or ended; its episode still holds, so no
+  second card is started over it. A start that failed or timed out without a token (`abandoned`)
+  opens no episode.
+- **Limits.** Pushes that light the screen — notifications and Live Activity pushes with an `alert`
+  — share `PUSH_MAX_ALERTS_PER_HOUR`. Rain starts are capped at `PUSH_MAX_LIVE_STARTS_PER_DAY` (3)
+  per device in any 24 h (night starts count). A new episode the cap allows no card for is told once
+  as a notification of the rule that would have started it (`rain_gate` → 'cap',
+  `livectl.NotifyInstead`, `worker.force_rain`) — whether or not that rule has re-armed: its re-arm
+  waits for 90 min without rain, which showery weather never has. The episode is recorded
+  (`notified`; it also uses up the episode's heavy-rain exception), so AREA_RESTART holds the area
+  afterwards as after a start. These notifications are capped alike (`rain_notifications`, the same
+  3 in 24 h) — otherwise a device with several places got one per area every 3 h — and none goes
+  for an area a rain notification reached within 3 h (`told_recently`, from the send log: rain
+  elsewhere is an ordinary notification while the card stays put, and opens no episode there).
+  The hourly limit is checked first, so a capped episode is never recorded as told while its
+  notification would be dropped. Beyond that, and
+  when the hourly limit allows no card, the rule's ordinary notification goes (once per phase,
+  re-armed after 90 min clear). Warnings are not capped.
+- **Rain notifications** re-arm only after 90 min without rain (`firing.REARM_AFTER_CLEAR`), not
+  after one clear frame — also when the first tick after the dry spell already sees rain
+  (`firing.rain_armed`, shared with `dedupe_rain`).
+- **Deploy:** push-work exits at start when 0024's columns are missing (`store.missing_columns`).
+- **Send log:** `notifications_sent.live_event` (start/update/end) and `alerting`; and
+  `devices.live_unconfirmed` (migration 0024).
+- **Unchanged on purpose:** night hours. Starts between 22 and 6 still go out (silently, as
+  before); `live.night` is still only validated (decision 2026-10-01).
+- Rows from before the change have no episodes; their cooldown still applies, without the old
+  heavier-rain bypass.
+- Known and accepted: `live_confirmed`'s backfill sees only each device's current row, so a device
+  that confirmed earlier may be treated as unconfirmed until its next dismissal or token report.
+  Devices that report dismissals but not tokens (about 760 in production) have their rain
+  dismissals ending the card without the 3 h hold (`dismissedUnnamed`); the episode rules still
+  hold the area.
+- **Replay of 1 Oct** (offline: production's rules, devices and dismissals, DWD's RV files, a
+  record-only APNs; local 00:00–17:46): the old code reproduces production (15,156 vs 16,136
+  starts, same median and p90). With these rules:
+
+  | | old code | new code |
+  |---|---|---|
+  | rain card starts | 15,156 | 7,524 |
+  | starts per device: median / p90 / max | 4 / 7 / 34 | 2 / 3 / 3 |
+  | restarts within 55 min | 1,326 | 21 |
+  | rain notifications | 1,736 | 1,664 |
+  | pushes that light the screen, per device: mean / p90 / max | 6.0 / 11 / 39 | 2.5 / 4 / 7 |
+  | a notification and then a card for the same rain within 60 min | 283 | 45 |
+  | cards that alert twice or more while running | 1,897 | 0 |
+  | cards ended by the lifetime | ~1,100 at 4 h | 121 at 7.5 h |
+
+  Rain the old code told (a start or a notification) that the new code leaves untold (no card
+  running, nothing lighting the screen within 30 min): 5,605 of 16,892 — mostly on purpose: 1,690
+  within 3 h of a start in the area, 2,297 never started (short showers, dismissals, one-frame
+  rain), 768 past the cap (night starts count; its notifications are capped too). Replayed without
+  any token report, devices that never confirm a card fall back to notifications.
+
+  Checked over all devices (replay `checks.py`): no device over 3 starts or 8 pushes that light the
+  screen, no start over a running card, no notification for an area a card carries, no card
+  alerting twice, no area told twice within 90 min; the only restarts in an area within 3 h that
+  are not the heavy exception are 4 rule replacements during rain (another rule starts at once —
+  still so, deferred).
+
 ## Load on `web` (2026-09-24)
 
 Measured against production over 7 days (Traefik via Prometheus): 3 req/s at night, 23–31 by
