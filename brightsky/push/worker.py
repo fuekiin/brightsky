@@ -238,17 +238,20 @@ async def mark_seen(conn, new, gone, now):
             gone, LIVE_SEEN)
 
 
-def hold_decisions(decided, waiting, carried):
-    """For devices whose live rain start waits for its second frame
-    (`waiting`: device → cell) and that no activity carries: the rain rules
-    of that area neither fire nor write state this tick."""
+def hold_decisions(decided, waiting):
+    """For devices whose live rain starts wait for their second frame
+    (`waiting`: device → cells): the rain rules of those areas neither fire
+    nor write state this tick — also while a card runs elsewhere or just
+    ended: unconfirmed rain is told by nobody, and confirmed rain once
+    (2026-10-02: a notification, then a card for the same rain)."""
     for rule, row, decision in decided:
-        device_id = str(row['d_id'])
-        cell = waiting.get(device_id)
-        if cell is None or device_id in carried:
+        cells = waiting.get(str(row['d_id']))
+        if not cells:
             continue
-        if firing._km(rule.lat_lon, rulemod.parse_cell_key(cell)) \
-                <= firing.RAIN_AREA_KM:
+        # Every waiting area, not just the first: a device with many places
+        # was told by notification of the rest (2026-10-02).
+        if any(firing._km(rule.lat_lon, rulemod.parse_cell_key(cell))
+               <= firing.RAIN_AREA_KM for cell in cells):
             decision.fires = []
             decision.writes = {}
 
@@ -552,7 +555,7 @@ class Worker:
             decided = []
             candidates = {}
             seen_new, seen_gone = [], []
-            waiting = {}     # device → cell of a start awaiting its frame
+            waiting = {}     # device → cells of starts awaiting a frame
             matches = {}     # rule id → its rain match this tick
             for row in rows:
                 if row['cell_key'] not in points:
@@ -610,7 +613,8 @@ class Worker:
                                         rain=rain, context=match.context,
                                         cell_key=rule.cell_key))
                             elif livectl.can_start(device_of(row)):
-                                waiting.setdefault(device_id, rule.cell_key)
+                                waiting.setdefault(device_id, set()).add(
+                                    rule.cell_key)
                                 if seen is None:
                                     seen_new.append(rule.id)
                         elif seen is not None:
@@ -646,7 +650,7 @@ class Worker:
             # a one-frame ghost. Its area decides nothing this tick, so the
             # rules stay armed for whatever comes next.
             forced_cells = {d: f.cell_key for d, f in forced.items()}
-            hold_decisions(decided, waiting, {**carried, **forced_cells})
+            hold_decisions(decided, waiting)
             force_rain(decided, forced, matches, now)
             # The activity is the notification for its own area; elsewhere,
             # and without an activity, rain is told once per device and area
