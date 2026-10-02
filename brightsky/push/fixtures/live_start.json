@@ -2,6 +2,7 @@
   "aps": {
     "timestamp": 1790164800,
     "event": "start",
+    "input-push-token": 1,
     "content-state": {
       "phase": {
         "rain": {
