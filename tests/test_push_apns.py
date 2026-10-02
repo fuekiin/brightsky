@@ -227,3 +227,4 @@ def test_content_state_uses_swift_dates():
                                 alert_body='b')
     assert start['aps']['attributes-type'] == 'WeatherLiveAttributes'
     assert start['aps']['event'] == 'start'
+    assert start['aps']['input-push-token'] == 1

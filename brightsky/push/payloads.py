@@ -101,6 +101,7 @@ def live_start(content, *, now, stale, alert_title, alert_body,
     return {'aps': {
         'timestamp': unix(now),
         'event': 'start',
+        'input-push-token': 1,
         'content-state': content,
         'attributes-type': ATTRIBUTES_TYPE,
         'attributes': {},
