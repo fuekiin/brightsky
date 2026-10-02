@@ -764,8 +764,84 @@ def test_the_hourly_limit_is_checked_before_the_cap(monkeypatch):
     async def budget(conn, device_id, now):
         return settings.PUSH_MAX_ALERTS_PER_HOUR, 99
     monkeypatch.setattr(livectl, 'budget', budget)
+
+    async def told_recently(conn, device_id, cell_key, now):
+        return False
+    monkeypatch.setattr(livectl, 'told_recently', told_recently)
     rain = live.analyze_rain([live.Point(NOW + i * 5 * M, 0.2)
                               for i in range(24)], NOW)
     c = live.Candidate('rain', 'r', NOW, rain=rain, cell_key='53.55,10.01')
     verdict = asyncio.run(livectl.rain_gate(None, {'id': DEVICE}, {}, c, NOW))
     assert verdict == 'limit'
+
+
+# MARK: - Morning after the deploy, 2026-10-02
+
+def test_a_dismissal_right_after_a_start_spares_the_new_card(push_db,
+                                                             monkeypatch):
+    """The app reports the card a new one replaced within seconds of the
+    start; without its token the server never learnt that card's id. It
+    ended the new card instead (10 of 2,237 starts)."""
+    stub = StubAPNs()
+    run(push_db, register_live([rain_rule()]), stub, monkeypatch)
+    nowcast(push_db, stub, monkeypatch, RAIN, NOW)          # no token
+
+    def report(activity_id, at):
+        async def fn(worker, pool):
+            async with pool.acquire() as conn:
+                await store.end_activity(conn, DEVICE, activity_id, at,
+                                         60 * M)
+        run(push_db, fn, stub, monkeypatch)
+
+    def row():
+        [(ended, state)] = push_db.fetch(
+            'SELECT ended_at IS NOT NULL, state FROM push.live_activities')
+        return ended, state
+    report('OLD', NOW + datetime.timedelta(seconds=2))
+    ended, state = row()
+    assert not ended
+    assert state['endedIds'] == ['OLD']
+    report('OLD', NOW + 5 * M)             # the same report again: still ok
+    assert not row()[0]
+    report('NEW', NOW + 5 * M)             # later, an unknown id: this card
+    ended, state = row()
+    assert ended and state['dismissedUnnamed']
+
+
+def test_a_dismissed_warning_stays_away_after_a_rain_card(push_db,
+                                                          monkeypatch):
+    """Only the card's own row remembered the dismissal, and a rain card in
+    between replaced it: the warning came back with an alert, three times
+    in one night."""
+    from .test_push_worker import WARN_RULE, add_alert, tick, warning_rule
+    stub = StubAPNs()
+    run(push_db, register_live([
+        rain_rule(), warning_rule(WARN_RULE, live={'night': False})]),
+        stub, monkeypatch)
+    add_alert(push_db, 'A', 'moderate', onset=NOW - H, hours=6)
+    run(push_db, tick(NOW), stub, monkeypatch)
+    report_token(push_db)
+    dismiss(push_db, stub, monkeypatch, NOW + M)
+    nowcast(push_db, stub, monkeypatch, RAIN, NOW + 5 * M)
+    report_token(push_db)
+    nowcast(push_db, stub, monkeypatch, HEAVY, NOW + 10 * M)  # an update
+    nowcast(push_db, stub, monkeypatch, DRY, NOW + 20 * M)
+    told = ['start', 'start', 'update', 'end']
+    assert events(stub) == told
+    run(push_db, tick(NOW + 21 * M), stub, monkeypatch)
+    assert events(stub) == told
+    add_alert(push_db, 'B', 'severe', onset=NOW - H, hours=6)
+    run(push_db, tick(NOW + 22 * M), stub, monkeypatch)    # escalation
+    assert events(stub)[-1] == 'start'
+
+
+def test_every_place_waiting_for_its_second_frame_is_held(push_db,
+                                                          monkeypatch):
+    """Only the first waiting place was held: a device with many places
+    was told of the rest by notification, then got a card for one."""
+    stub = StubAPNs()
+    berlin = dict(rain_rule(), id='00000000-0000-0000-0000-0000000000b2',
+                  cellKey='52.52,13.41')
+    run(push_db, register_live([rain_rule(), berlin]), stub, monkeypatch)
+    nowcast(push_db, stub, monkeypatch, [0] * 3 + [0.2] * 21, NOW)
+    assert events(stub) == []

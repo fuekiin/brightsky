@@ -400,12 +400,29 @@ async def end_activity(conn, device_id, activity_id, now, cooldown):
         # server never learnt: for rain, an unnamed match ends the card but
         # is no dismissal of its rain (no DISMISS_HOLD; the episode rules
         # still hold the area). Warnings keep their dismissal.
-        await conn.execute(
+        # A card started moments ago is not the one meant: the app reports
+        # the card it replaced right after a start (2026-10-02: 10 of 2,237
+        # starts, each new card ended within 2 s — and a dismissed warning
+        # came back three times). Its id goes with the replaced ones.
+        status = await conn.execute(
             _END_ACTIVITY.format(mark=_DISMISSED_UNNAMED)
             + 'WHERE device_id = $1 AND activity_id IS NULL '
             'AND ended_at IS NULL '
+            'AND started_at <= $3::timestamptz - $5::interval '
             "AND NOT (COALESCE(state -> 'endedIds', '[]'::jsonb) ? $2)",
-            device_id, activity_id, now, now + cooldown)
+            device_id, activity_id, now, now + cooldown, FRESH_START)
+        if status == 'UPDATE 0':
+            await conn.execute(
+                """
+                UPDATE push.live_activities SET state = jsonb_set(
+                  state, '{endedIds}',
+                  COALESCE(state -> 'endedIds', '[]'::jsonb)
+                  || to_jsonb($2::text))
+                WHERE device_id = $1 AND activity_id IS NULL
+                  AND ended_at IS NULL
+                  AND started_at > $3::timestamptz - $4::interval
+                  AND NOT (COALESCE(state -> 'endedIds', '[]'::jsonb) ? $2)
+                """, device_id, activity_id, now, FRESH_START)
     # A dismissal proves the app runs and its cards arrive
     # (livectl.can_start).
     await confirm_live(conn, device_id)
@@ -416,6 +433,11 @@ async def confirm_live(conn, device_id):
         'UPDATE push.devices SET live_confirmed = true, live_unconfirmed = 0 '
         'WHERE id = $1 AND (NOT live_confirmed OR live_unconfirmed <> 0)',
         device_id)
+
+
+# How long after its start an unnamed DELETE is taken for the card it
+# replaced rather than for the new one (end_activity).
+FRESH_START = datetime.timedelta(seconds=30)
 
 
 _END_ACTIVITY = """

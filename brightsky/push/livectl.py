@@ -93,7 +93,7 @@ async def _save(conn, device_id, *, rule_id, phase, content, state, now,
 
 
 # State keys that outlive any one activity's state (`_save`).
-STICKY = ('episodes', 'endedIds')
+STICKY = ('episodes', 'endedIds', 'warningsDone')
 
 
 async def _push(conn, client, device, row, payload, *, start, alert, now,
@@ -280,6 +280,9 @@ async def start_or_take_over(conn, client, device, row, c, now,
         ended.append(row['activity_id'])
     if ended:
         state['endedIds'] = ended[-ENDED_IDS:]
+    done = warnings_done(row, now)
+    if done:
+        state['warningsDone'] = done
     await _save(conn, device['id'], rule_id=c.rule_id, phase=c.kind,
                 content=content, state=state, now=now, started=True)
     # Counted until the app proves a card arrived (UNCONFIRMED_STARTS) —
@@ -536,6 +539,13 @@ async def rain_gate(conn, device, eps, c, now):
         heavy_first = c.rain.heavy and not e.get('heavy')
         if (open_ or recent) and not heavy_first:
             return 'hold'
+    if not c.rain.heavy and await told_recently(conn, device['id'],
+                                                c.cell_key, now):
+        # Told by a notification already — while another card ran, or
+        # before its rain could start one: no card on top for the same rain
+        # (2026-10-02: a notification, then 10–35 min later a card for the
+        # same place, 6 times overnight). Heavy rain still may start one.
+        return 'hold'
     hour, starts = await budget(conn, device['id'], now)
     # The hourly limit first: past it a capped episode would be recorded
     # as notified and its notification then dropped (final review).
@@ -746,6 +756,35 @@ async def expire_warning(conn, client, device, now):
                       now, cooldown=False)
 
 
+def warnings_done(row, now):
+    """Warning events that do not come back unless they escalate: {event
+    key: {'level', 'until', 'closed'? (dismissed or ran its 8 hours),
+    'gone'? (the rule id that went away)}}, kept across activities. Only
+    the row's own state knew it before, and a rain card in between
+    replaced it: a dismissed warning came back with an alert, three times
+    in one night (2026-10-02). The row's own warning is folded in;
+    entries past their warning's end are dropped."""
+    if row is None:
+        return {}
+    done = {key: dict(e)
+            for key, e in (row['state'].get('warningsDone') or {}).items()
+            if _at(e['until']) > now}
+    s = row['state']
+    closed = bool(s.get('dismissed') or s.get('lifetime'))
+    if (row['phase'] == 'warning' and row['ended_at'] is not None
+            and s.get('event') and (closed or s.get('gone'))):
+        until = s.get('expires') or (
+            row['ended_at'] + live.LIVE_LEAD).isoformat()
+        e = {'level': s.get('level', 0), 'until': until}
+        if closed:
+            e['closed'] = True
+        if s.get('gone'):
+            e['gone'] = s['gone']
+        if _at(until) > now:
+            done[s['event']] = e
+    return done
+
+
 def _cancelled(row, now):
     content = dict(row['last_content'])
     phase = dict(content['phase']['warning']['_0'])
@@ -831,12 +870,13 @@ async def warning_tick(conn, client, device, candidate, status, now):
         if candidate is None:
             return False
         # An event the user dismissed, that ran its 8 hours, or whose rule
-        # went away and came back, does not come back unless it escalates.
-        if (row is not None and row['ended_at'] is not None
-                and s.get('event') == candidate.event_key
-                and (s.get('dismissed') or s.get('lifetime')
-                     or s.get('gone') == candidate.rule_id)
-                and candidate.level <= s.get('level', 0)):
+        # went away and came back, does not come back unless it escalates —
+        # also after a rain card in between (`warnings_done`).
+        done = warnings_done(row, now).get(candidate.event_key)
+        if (done is not None
+                and (done.get('closed')
+                     or done.get('gone') == candidate.rule_id)
+                and candidate.level <= done['level']):
             return True
         return await start_or_take_over(conn, client, device, row,
                                         candidate, now)

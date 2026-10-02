@@ -605,9 +605,9 @@ def test_r5_rain_elsewhere_does_not_take_the_card_away(push_db,
                                                      monkeypatch):
     """Review 2026-10-01 (cards switching places every few minutes): the
     activity keeps its place while rain is still expected there. Rain
-    elsewhere, even sooner, is told as a notification; once the place is
-    dry, the other place gets its own activity in the same tick — never
-    another place's content on this one."""
+    elsewhere, even sooner, is told as a notification — never another
+    place's content on this one. Once the place is dry, the other place's
+    rain, already told, gets no card on top (2026-10-02)."""
     stub = StubAPNs()
     berlin_rule = dict(rain_rule(), id='00000000-0000-0000-0000-0000000000b2',
                        cellKey='52.52,13.41')
@@ -629,9 +629,14 @@ def test_r5_rain_elsewhere_does_not_take_the_card_away(push_db,
     lives = [b[2]['aps'] for b in bodies(stub) if b[0] == 'liveactivity']
     assert [a['event'] for a in lives] == ['start']
     assert [b[0] for b in bodies(stub)] == ['liveactivity', 'alert']
-    # Hamburg dry for two hours: its card ends, Berlin's starts.
+    # Hamburg dry for two hours: its card ends; Berlin was told.
     by_lat[53.55] = [0] * 24
     run(push_db, ntick(NOW + 10 * M), stub, monkeypatch)
+    assert [(b[0], b[2]['aps'].get('event')) for b in bodies(stub)] == [
+        ('liveactivity', 'start'), ('alert', None), ('liveactivity', 'end')]
+    # Heavy rain there still starts one.
+    by_lat[52.52] = [12.0] * 24
+    run(push_db, ntick(NOW + 15 * M), stub, monkeypatch)
     lives = [b[2]['aps'] for b in bodies(stub) if b[0] == 'liveactivity']
     assert [a['event'] for a in lives] == ['start', 'end', 'start']
     assert lives[-1]['content-state']['ruleId'] == berlin_rule['id']
@@ -1373,6 +1378,9 @@ def test_review6_rain_elsewhere_opens_as_coming(push_db, monkeypatch):
     by_lat[52.52] = [0] * 4 + [0.2] * 20                 # Berlin: in 15
     run(push_db, ntick(NOW + 5 * M), stub, monkeypatch)  # first frame
     run(push_db, ntick(NOW + 10 * M), stub, monkeypatch)
+    # Not told by notification while it waited for its second frame, though
+    # Hamburg's card ended in the same tick (2026-10-02).
+    assert 'alert' not in [b[0] for b in bodies(stub)]
     start = bodies(stub)[-1][2]['aps']
     assert start['event'] == 'start'
     assert start['content-state']['ruleId'] == berlin_rule['id']

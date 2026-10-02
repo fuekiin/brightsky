@@ -390,6 +390,32 @@ stopped ending cards whose warning had expired: 88 cards still showed
   has `timeout=60`, a read timeout: large files still come in as long as
   bytes keep flowing.
 
+## After the deploy: three gaps (2026-10-02)
+
+The first night on the new code (22:57–05:23 UTC): 2,223 card starts on
+1,904 devices, at most 3 rain starts per device, screen-lighting pushes
+per device 1.18 on average (max 8). Three gaps showed:
+
+- **A dismissal report right after a start ended the new card.** The app
+  reports the card a new one replaced within 1–2 s; when it never sent
+  that card's token, the server never learnt its id, and the unnamed
+  fallback ended the new card instead (10 of 2,237 starts). Within
+  `store.FRESH_START` (30 s) of a start, an unknown id now joins
+  `endedIds` and the new card stays.
+- **A dismissed warning came back after a rain card.** Only the card's own
+  row remembered the dismissal (or its 8 hours, or its rule going away);
+  a rain card in between replaced the row, and one device saw the same
+  Dauerregen warning start three times in a night. `state.warningsDone`
+  (sticky, until the warning's end) keeps it across cards
+  (`livectl.warnings_done`).
+- **Rain told by notification, then a card for the same rain** (6 times
+  on 5 devices, 10–35 min apart): rain elsewhere while a card ran, or a
+  place waiting for its second radar frame while the device counted as
+  carried, or a second waiting place (only the first was held). Now:
+  `rain_gate` holds a card for an area that got a rain notification
+  within AREA_RESTART, unless the rain is heavy; every waiting place is
+  held, card or not.
+
 ## Load on `web` (2026-09-24)
 
 Measured against production over 7 days (Traefik via Prometheus): 3 req/s at night, 23–31 by
